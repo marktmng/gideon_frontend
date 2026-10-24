@@ -7,9 +7,11 @@ export default function Header({
   onNewConversation,
   onToggleSidebar,
   isSidebarOpen,
+  statusData,
 }) {
   const getHeaderTitle = () => {
     if (activeView === 'tasks') return 'Mission Directives';
+    if (activeView === 'memories') return 'Neural Memory Archives';
     if (activeView === 'settings') return 'System Diagnostics';
     return activeConversation?.title || 'Active Session';
   };
@@ -39,7 +41,12 @@ export default function Header({
       </div>
 
       <div className="header-right">
-        <DemoBadge />
+        <DemoBadge
+          isDemo={statusData ? statusData.is_demo : true}
+          provider={statusData?.provider || 'demo'}
+          status={statusData?.status || 'demo_mode'}
+          model={statusData?.model}
+        />
         {activeView === 'chat' && (
           <button
             className="btn-header-new-chat"

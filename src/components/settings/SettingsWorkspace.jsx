@@ -11,13 +11,15 @@ export default function SettingsWorkspace({
   error,
   onRefresh,
 }) {
+  const isDemo = statusData ? statusData.is_demo : true;
+
   return (
     <div className="settings-workspace">
       <div className="settings-header">
         <div>
           <h2 className="workspace-title">System Diagnostics & Settings</h2>
           <p className="workspace-subtitle">
-            Inspect core architecture, active AI provider runtime, database status, and subsystem capabilities.
+            Inspect core architecture, active AI provider runtime, persistent memory subsystems, and database status.
           </p>
         </div>
         <button className="btn-secondary" onClick={onRefresh} type="button">
@@ -37,12 +39,18 @@ export default function SettingsWorkspace({
           <div className="settings-card">
             <div className="card-header">
               <h3>Core System Status</h3>
-              <span className="system-pill-online">● Operational</span>
+              <span className={statusData?.database_connected ? "system-pill-online" : "system-pill-offline"}>
+                {statusData?.database_connected ? "● Operational" : "○ Disconnected"}
+              </span>
             </div>
             <div className="card-body">
               <div className="info-row">
                 <span className="info-label">Assistant Identity</span>
-                <span className="info-value font-mono">Gideon (Phase 1)</span>
+                <span className="info-value font-mono">Gideon (Phase 2)</span>
+              </div>
+              <div className="info-row">
+                <span className="info-label">Architecture Core</span>
+                <span className="info-value font-mono">FastAPI + React 19 + SQLAlchemy 2.0</span>
               </div>
               <div className="info-row">
                 <span className="info-label">API Endpoint</span>
@@ -65,7 +73,12 @@ export default function SettingsWorkspace({
           <div className="settings-card">
             <div className="card-header">
               <h3>AI Provider Pipeline</h3>
-              <DemoBadge />
+              <DemoBadge
+                isDemo={isDemo}
+                provider={statusData?.provider || 'demo'}
+                status={statusData?.status || 'demo_mode'}
+                model={statusData?.model}
+              />
             </div>
             <div className="card-body">
               <div className="info-row">
@@ -76,10 +89,32 @@ export default function SettingsWorkspace({
                 <span className="info-label">Active Model</span>
                 <span className="info-value font-mono">{statusData?.model || 'local-demo-engine'}</span>
               </div>
+              <div className="info-row">
+                <span className="info-label">Streaming Response</span>
+                <span className="info-value font-mono text-emerald">
+                  {statusData?.streaming_supported ? 'Enabled (SSE)' : 'Disabled'}
+                </span>
+              </div>
+              <div className="info-row">
+                <span className="info-label">Provider Credentials</span>
+                <span className="info-value font-mono">
+                  {statusData?.has_provider_credentials ? 'Configured (Secure)' : 'Not Configured (Demo Mode Active)'}
+                </span>
+              </div>
               <div className="info-notice">
-                <p>
-                  <strong>Local Demo Mode Active:</strong> Gideon is generating simulated responses locally without making external billable API calls. No API credentials are required for local testing.
-                </p>
+                {isDemo ? (
+                  <p>
+                    <strong>Local Demo Mode Active:</strong> Gideon is generating simulated responses locally without making external billable API calls. To enable real generative responses, configure <code>AI_PROVIDER=gemini</code> and <code>GEMINI_API_KEY</code> in <code>backend/.env</code>.
+                  </p>
+                ) : statusData?.has_provider_credentials ? (
+                  <p>
+                    <strong>Real AI Brain Active:</strong> Gideon is powered by Google Gemini (<code>{statusData?.model}</code>) with real-time progressive streaming and bounded memory context.
+                  </p>
+                ) : (
+                  <p>
+                    <strong>Credentials Missing:</strong> Provider is set to <code>{statusData?.provider}</code>, but no API key was found. Configure <code>GEMINI_API_KEY</code> to activate real AI generation.
+                  </p>
+                )}
               </div>
             </div>
           </div>
@@ -92,7 +127,7 @@ export default function SettingsWorkspace({
             <div className="card-body">
               <div className="subsystems-grid">
                 <div>
-                  <h4 className="subsystem-group-title text-emerald">Active Phase 1 Capabilities</h4>
+                  <h4 className="subsystem-group-title text-emerald">Active Phase 1 & 2 Capabilities</h4>
                   <ul className="subsystem-list">
                     {statusData?.capabilities?.map((cap, idx) => (
                       <li key={idx} className="subsystem-item active">
@@ -104,13 +139,13 @@ export default function SettingsWorkspace({
                 </div>
 
                 <div>
-                  <h4 className="subsystem-group-title text-muted">Planned Future Subsystems (Phase 2+)</h4>
+                  <h4 className="subsystem-group-title text-muted">Planned Future Subsystems (Phase 3+)</h4>
                   <ul className="subsystem-list">
                     {statusData?.unconfigured_features?.map((feat, idx) => (
                       <li key={idx} className="subsystem-item unconfigured">
                         <span className="subsystem-icon">○</span>
                         <span className="subsystem-name">{feat.replace(/_/g, ' ')}</span>
-                        <span className="subsystem-tag">Planned</span>
+                        <span className="subsystem-tag">Phase 3</span>
                       </li>
                     ))}
                   </ul>
@@ -122,32 +157,30 @@ export default function SettingsWorkspace({
           {/* Card 4: Architecture Integration Guide */}
           <div className="settings-card full-width">
             <div className="card-header">
-              <h3>Extending Gideon Architecture</h3>
+              <h3>Configuring Google Gemini AI Provider</h3>
             </div>
             <div className="card-body documentation-card">
               <div className="doc-section">
-                <h4>Connecting PostgreSQL</h4>
+                <h4>1. Obtaining API Credentials</h4>
                 <p>
-                  Configure <code>DATABASE_URL</code> in <code>backend/.env</code>:
+                  Acquire an API key from <a href="https://aistudio.google.com/" target="_blank" rel="noopener noreferrer" style={{ color: '#00e5ff' }}>Google AI Studio</a>. Note that an Antigravity IDE subscription does not automatically grant API keys; dedicated API credentials are required for backend model invocation.
                 </p>
-                <pre className="code-block">
-                  DATABASE_URL=postgresql+psycopg2://username:password@localhost:5432/gideon
-                </pre>
-                <p>Then apply migrations: <code>alembic upgrade head</code>.</p>
               </div>
 
               <div className="doc-section">
-                <h4>Connecting an External AI Provider</h4>
+                <h4>2. Setting Backend Configuration</h4>
                 <p>
-                  Configure provider keys in <code>backend/.env</code>:
+                  In <code>gideon-backend/.env</code>:
                 </p>
                 <pre className="code-block">
-                  AI_PROVIDER=openai # or anthropic, gemini
-                  AI_API_KEY=your_key_here
-                  AI_MODEL=gpt-4o
+                  AI_PROVIDER=gemini{'\n'}
+                  AI_MODEL=gemini-2.5-flash{'\n'}
+                  GEMINI_API_KEY=your_actual_gemini_api_key_here{'\n'}
+                  AI_TEMPERATURE=0.7{'\n'}
+                  AI_MAX_OUTPUT_TOKENS=1024
                 </pre>
                 <p>
-                  Implement the <code>BaseAIProvider</code> interface in <code>backend/app/ai/</code> without modifying route handlers or frontend components.
+                  Restart the backend service. Gideon will immediately transition from Demo Mode to Real AI Generation.
                 </p>
               </div>
             </div>

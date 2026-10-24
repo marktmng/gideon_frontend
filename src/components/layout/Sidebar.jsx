@@ -74,6 +74,21 @@ export default function Sidebar({
           </button>
 
           <button
+            className={`nav-btn ${activeView === 'memories' ? 'active' : ''}`}
+            onClick={() => {
+              onViewChange('memories');
+              onClose();
+            }}
+            type="button"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
+              <path d="M12 2a9 9 0 0 0-9 9c0 3.2 1.7 6 4.3 7.6L7 22l4-2h1a9 9 0 0 0 9-9 9 9 0 0 0-9-9z" />
+              <path d="M12 6v6l4 2" />
+            </svg>
+            <span>Memory Archives</span>
+          </button>
+
+          <button
             className={`nav-btn ${activeView === 'settings' ? 'active' : ''}`}
             onClick={() => {
               onViewChange('settings');
