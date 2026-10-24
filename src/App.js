@@ -1,34 +1,43 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Header from './components/layout/Header';
 import Sidebar from './components/layout/Sidebar';
 import ChatWorkspace from './components/chat/ChatWorkspace';
 import TasksWorkspace from './components/tasks/TasksWorkspace';
+import MemoryWorkspace from './components/memory/MemoryWorkspace';
 import SettingsWorkspace from './components/settings/SettingsWorkspace';
 import * as conversationsApi from './services/conversations';
 import * as messagesApi from './services/messages';
 import * as tasksApi from './services/tasks';
+import * as memoriesApi from './services/memories';
 import * as assistantApi from './services/assistant';
 import './App.css';
 
 export default function App() {
-  const [activeView, setActiveView] = useState('chat'); // 'chat' | 'tasks' | 'settings'
+  const [activeView, setActiveView] = useState('chat'); // 'chat' | 'tasks' | 'memories' | 'settings'
   const [conversations, setConversations] = useState([]);
   const [activeConversationId, setActiveConversationId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const [memories, setMemories] = useState([]);
   const [healthData, setHealthData] = useState(null);
   const [statusData, setStatusData] = useState(null);
 
   const [loadingConversations, setLoadingConversations] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
+  const [streamingText, setStreamingText] = useState('');
+  const [recalledMemoriesCount, setRecalledMemoriesCount] = useState(0);
   const [loadingTasks, setLoadingTasks] = useState(false);
+  const [loadingMemories, setLoadingMemories] = useState(false);
   const [loadingSettings, setLoadingSettings] = useState(false);
 
   const [errorMessages, setErrorMessages] = useState(null);
   const [errorTasks, setErrorTasks] = useState(null);
+  const [errorMemories, setErrorMemories] = useState(null);
   const [backendConnected, setBackendConnected] = useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+  const abortControllerRef = useRef(null);
 
   // Check backend health & status
   const checkSystemHealth = useCallback(async () => {
@@ -95,6 +104,20 @@ export default function App() {
     }
   }, []);
 
+  // Load persistent memories
+  const loadMemories = useCallback(async () => {
+    try {
+      setLoadingMemories(true);
+      setErrorMemories(null);
+      const res = await memoriesApi.listMemories(1, 100);
+      setMemories(res.items || []);
+    } catch (err) {
+      setErrorMemories(err.message || 'Failed to access persistent memory archives.');
+    } finally {
+      setLoadingMemories(false);
+    }
+  }, []);
+
   // Initial startup
   useEffect(() => {
     checkSystemHealth();
@@ -105,33 +128,55 @@ export default function App() {
       }
     });
     loadTasks();
-  }, [checkSystemHealth, loadConversations, loadMessages, loadTasks]);
+    loadMemories();
+  }, [checkSystemHealth, loadConversations, loadMessages, loadTasks, loadMemories]);
 
   // Select a conversation
   const handleSelectConversation = (convId) => {
+    if (sendingMessage) {
+      handleStopGeneration();
+    }
     setActiveConversationId(convId);
+    setStreamingText('');
+    setRecalledMemoriesCount(0);
     loadMessages(convId);
   };
 
   // Start new conversation
   const handleNewConversation = async () => {
     try {
+      if (sendingMessage) {
+        handleStopGeneration();
+      }
       const newConv = await conversationsApi.createConversation(null);
       setConversations((prev) => [newConv, ...prev]);
       setActiveConversationId(newConv.id);
       setMessages([]);
+      setStreamingText('');
+      setRecalledMemoriesCount(0);
       setErrorMessages(null);
     } catch (err) {
       setErrorMessages(err.message || 'Could not initiate new conversation session.');
     }
   };
 
-  // Send message
+  // Stop/Halt active generation
+  const handleStopGeneration = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setSendingMessage(false);
+    setStreamingText('');
+  };
+
+  // Send message with progressive streaming
   const handleSendMessage = async (content) => {
     let convId = activeConversationId;
 
     try {
       setSendingMessage(true);
+      setStreamingText('');
       setErrorMessages(null);
 
       // If no conversation is active, create one first
@@ -143,8 +188,9 @@ export default function App() {
       }
 
       // Optimistic user message preview
+      const tempId = `temp-${Date.now()}`;
       const tempUserMsg = {
-        id: `temp-${Date.now()}`,
+        id: tempId,
         conversation_id: convId,
         role: 'user',
         content,
@@ -152,28 +198,54 @@ export default function App() {
       };
       setMessages((prev) => [...prev, tempUserMsg]);
 
-      // Submit to backend
-      const response = await messagesApi.submitMessage(convId, content);
+      // Prepare cancellation controller
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
 
-      // Replace with persisted user and assistant messages
-      setMessages((prev) => [
-        ...prev.filter((m) => m.id !== tempUserMsg.id),
-        response.user_message,
-        response.assistant_message,
-      ]);
-
-      // Refresh conversations list to update titles
-      loadConversations();
+      await messagesApi.streamMessage(convId, content, {
+        signal: controller.signal,
+        onStart: (startData) => {
+          if (startData.user_message) {
+            // Replace optimistic message with persisted record
+            setMessages((prev) =>
+              prev.map((m) => (m.id === tempId ? startData.user_message : m))
+            );
+          }
+          if (startData.relevant_memories_count !== undefined) {
+            setRecalledMemoriesCount(startData.relevant_memories_count);
+          }
+        },
+        onDelta: (delta) => {
+          setStreamingText((prev) => prev + delta);
+        },
+        onComplete: (assistantMsg) => {
+          setMessages((prev) => [...prev, assistantMsg]);
+          setStreamingText('');
+          setSendingMessage(false);
+          abortControllerRef.current = null;
+          loadConversations();
+        },
+        onError: (err) => {
+          setErrorMessages(err.message || 'Failed to obtain generative response from Gideon.');
+          setStreamingText('');
+          setSendingMessage(false);
+          abortControllerRef.current = null;
+        },
+      });
     } catch (err) {
-      setErrorMessages(err.message || 'Failed to obtain response from Gideon.');
-    } finally {
+      setErrorMessages(err.message || 'Failed to submit message to Gideon.');
       setSendingMessage(false);
+      setStreamingText('');
+      abortControllerRef.current = null;
     }
   };
 
   // Delete conversation
   const handleDeleteConversation = async (convId) => {
     try {
+      if (activeConversationId === convId && sendingMessage) {
+        handleStopGeneration();
+      }
       await conversationsApi.deleteConversation(convId);
       setConversations((prev) => prev.filter((c) => c.id !== convId));
 
@@ -216,6 +288,36 @@ export default function App() {
     }
   };
 
+  // Memory actions
+  const handleCreateMemory = async (memoryData) => {
+    try {
+      const newMem = await memoriesApi.createMemory(memoryData);
+      setMemories((prev) => [newMem, ...prev]);
+    } catch (err) {
+      setErrorMemories(err.message || 'Failed to record memory directive.');
+      throw err;
+    }
+  };
+
+  const handleUpdateMemory = async (memoryId, memoryData) => {
+    try {
+      const updated = await memoriesApi.updateMemory(memoryId, memoryData);
+      setMemories((prev) => prev.map((m) => (m.id === memoryId ? updated : m)));
+    } catch (err) {
+      setErrorMemories(err.message || 'Failed to update memory directive.');
+      throw err;
+    }
+  };
+
+  const handleDeleteMemory = async (memoryId) => {
+    try {
+      await memoriesApi.deleteMemory(memoryId);
+      setMemories((prev) => prev.filter((m) => m.id !== memoryId));
+    } catch (err) {
+      setErrorMemories(err.message || 'Failed to delete memory directive.');
+    }
+  };
+
   const activeConversation = conversations.find((c) => c.id === activeConversationId);
 
   return (
@@ -241,6 +343,7 @@ export default function App() {
           onNewConversation={handleNewConversation}
           onToggleSidebar={() => setIsSidebarOpen((prev) => !prev)}
           isSidebarOpen={isSidebarOpen}
+          statusData={statusData}
         />
 
         {activeView === 'chat' && (
@@ -249,8 +352,12 @@ export default function App() {
             messages={messages}
             loading={loadingMessages}
             sending={sendingMessage}
+            streamingText={streamingText}
+            recalledMemoriesCount={recalledMemoriesCount}
             error={errorMessages}
+            statusData={statusData}
             onSendMessage={handleSendMessage}
+            onStopGeneration={handleStopGeneration}
             onRetry={() => activeConversationId && loadMessages(activeConversationId)}
             onPromptSelect={handleSendMessage}
           />
@@ -265,6 +372,18 @@ export default function App() {
             onUpdateStatus={handleUpdateTaskStatus}
             onDeleteTask={handleDeleteTask}
             onRefresh={loadTasks}
+          />
+        )}
+
+        {activeView === 'memories' && (
+          <MemoryWorkspace
+            memories={memories}
+            loading={loadingMemories}
+            error={errorMemories}
+            onCreateMemory={handleCreateMemory}
+            onUpdateMemory={handleUpdateMemory}
+            onDeleteMemory={handleDeleteMemory}
+            onRefresh={loadMemories}
           />
         )}
 
