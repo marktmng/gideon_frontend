@@ -1,16 +1,21 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, Suspense, lazy } from 'react';
 import Header from './components/layout/Header';
 import Sidebar from './components/layout/Sidebar';
 import ChatWorkspace from './components/chat/ChatWorkspace';
-import TasksWorkspace from './components/tasks/TasksWorkspace';
-import MemoryWorkspace from './components/memory/MemoryWorkspace';
-import SettingsWorkspace from './components/settings/SettingsWorkspace';
+import CameraGestureMonitor from './components/vision/CameraGestureMonitor';
+import LoadingSpinner from './components/common/LoadingSpinner';
 import * as conversationsApi from './services/conversations';
 import * as messagesApi from './services/messages';
 import * as tasksApi from './services/tasks';
 import * as memoriesApi from './services/memories';
 import * as assistantApi from './services/assistant';
+import useInteractionController from './services/useInteractionController';
 import './App.css';
+
+// Performance Optimization: Code-split secondary workspaces so initial bundle loads faster
+const TasksWorkspace = lazy(() => import('./components/tasks/TasksWorkspace'));
+const MemoryWorkspace = lazy(() => import('./components/memory/MemoryWorkspace'));
+const SettingsWorkspace = lazy(() => import('./components/settings/SettingsWorkspace'));
 
 export default function App() {
   const [activeView, setActiveView] = useState('chat'); // 'chat' | 'tasks' | 'memories' | 'settings'
@@ -38,17 +43,20 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   const abortControllerRef = useRef(null);
+  const tasksFetchedRef = useRef(false);
+  const memoriesFetchedRef = useRef(false);
 
-  // Check backend health & status
+  // Performance Optimization: Parallelize system health & status queries
   const checkSystemHealth = useCallback(async () => {
     try {
       setLoadingSettings(true);
-      const health = await assistantApi.getHealth();
+      const [health, status] = await Promise.all([
+        assistantApi.getHealth(),
+        assistantApi.getAssistantStatus(),
+      ]);
       setHealthData(health);
-      setBackendConnected(true);
-
-      const status = await assistantApi.getAssistantStatus();
       setStatusData(status);
+      setBackendConnected(true);
     } catch (err) {
       setBackendConnected(false);
     } finally {
@@ -90,13 +98,14 @@ export default function App() {
     }
   }, []);
 
-  // Load tasks
+  // Load tasks on demand
   const loadTasks = useCallback(async () => {
     try {
       setLoadingTasks(true);
       setErrorTasks(null);
       const res = await tasksApi.listTasks(null, 1, 100);
       setTasks(res.items || []);
+      tasksFetchedRef.current = true;
     } catch (err) {
       setErrorTasks(err.message || 'Failed to load mission tasks.');
     } finally {
@@ -104,13 +113,14 @@ export default function App() {
     }
   }, []);
 
-  // Load persistent memories
+  // Load persistent memories on demand
   const loadMemories = useCallback(async () => {
     try {
       setLoadingMemories(true);
       setErrorMemories(null);
       const res = await memoriesApi.listMemories(1, 100);
       setMemories(res.items || []);
+      memoriesFetchedRef.current = true;
     } catch (err) {
       setErrorMemories(err.message || 'Failed to access persistent memory archives.');
     } finally {
@@ -118,7 +128,7 @@ export default function App() {
     }
   }, []);
 
-  // Initial startup
+  // Optimized Initial Startup: Only fetch conversation & health essentials for primary screen
   useEffect(() => {
     checkSystemHealth();
     loadConversations().then((items) => {
@@ -127,15 +137,50 @@ export default function App() {
         loadMessages(items[0].id);
       }
     });
-    loadTasks();
-    loadMemories();
+
+    // Defer non-critical background data during idle time
+    const timer = setTimeout(() => {
+      if (!tasksFetchedRef.current) loadTasks();
+      if (!memoriesFetchedRef.current) loadMemories();
+    }, 150);
+
+    return () => clearTimeout(timer);
   }, [checkSystemHealth, loadConversations, loadMessages, loadTasks, loadMemories]);
+
+  // Lazy load when tabs are clicked if not already loaded
+  useEffect(() => {
+    if (activeView === 'tasks' && !tasksFetchedRef.current) {
+      loadTasks();
+    }
+    if (activeView === 'memories' && !memoriesFetchedRef.current) {
+      loadMemories();
+    }
+  }, [activeView, loadTasks, loadMemories]);
+
+  // Stop active generation
+  const handleStopGeneration = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setSendingMessage(false);
+    setStreamingText('');
+  }, []);
+
+  // Phase 3 Shared Interaction Controller
+  const activeTask = tasks.find((t) => t.status === 'in_progress');
+  const interaction = useInteractionController({
+    onSendMessage: (text) => handleSendMessage(text),
+    onHaltGeneration: handleStopGeneration,
+    activeTask,
+  });
 
   // Select a conversation
   const handleSelectConversation = (convId) => {
     if (sendingMessage) {
       handleStopGeneration();
     }
+    interaction.stopSpeaking();
     setActiveConversationId(convId);
     setStreamingText('');
     setRecalledMemoriesCount(0);
@@ -148,6 +193,7 @@ export default function App() {
       if (sendingMessage) {
         handleStopGeneration();
       }
+      interaction.stopSpeaking();
       const newConv = await conversationsApi.createConversation(null);
       setConversations((prev) => [newConv, ...prev]);
       setActiveConversationId(newConv.id);
@@ -160,17 +206,7 @@ export default function App() {
     }
   };
 
-  // Stop/Halt active generation
-  const handleStopGeneration = () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
-    setSendingMessage(false);
-    setStreamingText('');
-  };
-
-  // Send message with progressive streaming
+  // Send message with progressive streaming and vocal response
   const handleSendMessage = async (content) => {
     let convId = activeConversationId;
 
@@ -178,6 +214,8 @@ export default function App() {
       setSendingMessage(true);
       setStreamingText('');
       setErrorMessages(null);
+      interaction.stopSpeaking();
+      interaction.setProcessing(true, content);
 
       // If no conversation is active, create one first
       if (!convId) {
@@ -206,7 +244,6 @@ export default function App() {
         signal: controller.signal,
         onStart: (startData) => {
           if (startData.user_message) {
-            // Replace optimistic message with persisted record
             setMessages((prev) =>
               prev.map((m) => (m.id === tempId ? startData.user_message : m))
             );
@@ -223,13 +260,20 @@ export default function App() {
           setStreamingText('');
           setSendingMessage(false);
           abortControllerRef.current = null;
+          interaction.setProcessing(false);
           loadConversations();
+
+          // Phase 3: Speak response if voice output enabled
+          if (assistantMsg && assistantMsg.content) {
+            interaction.speakResponse(assistantMsg.content);
+          }
         },
         onError: (err) => {
           setErrorMessages(err.message || 'Failed to obtain generative response from Gideon.');
           setStreamingText('');
           setSendingMessage(false);
           abortControllerRef.current = null;
+          interaction.setProcessing(false);
         },
       });
     } catch (err) {
@@ -237,6 +281,7 @@ export default function App() {
       setSendingMessage(false);
       setStreamingText('');
       abortControllerRef.current = null;
+      interaction.setProcessing(false);
     }
   };
 
@@ -246,6 +291,7 @@ export default function App() {
       if (activeConversationId === convId && sendingMessage) {
         handleStopGeneration();
       }
+      interaction.stopSpeaking();
       await conversationsApi.deleteConversation(convId);
       setConversations((prev) => prev.filter((c) => c.id !== convId));
 
@@ -322,6 +368,7 @@ export default function App() {
 
   return (
     <div className="app-layout">
+      {/* Sidebar with Navigation & History */}
       <Sidebar
         conversations={conversations}
         activeConversationId={activeConversationId}
@@ -329,7 +376,10 @@ export default function App() {
         onNewConversation={handleNewConversation}
         onDeleteConversation={handleDeleteConversation}
         activeView={activeView}
-        onViewChange={setActiveView}
+        onViewChange={(view) => {
+          interaction.stopSpeaking();
+          setActiveView(view);
+        }}
         isOpen={isSidebarOpen}
         onClose={() => setIsSidebarOpen(false)}
         backendConnected={backendConnected}
@@ -360,42 +410,90 @@ export default function App() {
             onStopGeneration={handleStopGeneration}
             onRetry={() => activeConversationId && loadMessages(activeConversationId)}
             onPromptSelect={handleSendMessage}
+            // Phase 3 Props
+            interactionState={interaction.state}
+            audioLevel={interaction.audioLevel}
+            statusMessage={interaction.statusMessage}
+            interimTranscript={interaction.interimTranscript}
+            isListening={interaction.isListening}
+            isSpeaking={interaction.isSpeaking}
+            onToggleListening={interaction.toggleListening}
+            onStopSpeaking={interaction.stopSpeaking}
+            onInterruption={interaction.handleInterruption}
+            cameraActive={interaction.cameraActive}
+            onToggleCamera={interaction.toggleCamera}
+            gestureStatus={interaction.gestureStatus}
+            detectedGesture={interaction.detectedGesture}
+            reducedMotion={interaction.settings.reducedMotion}
+            voiceEnabled={interaction.settings.voiceEnabled}
+            onToggleVoice={() =>
+              interaction.updateSettings({ voiceEnabled: !interaction.settings.voiceEnabled })
+            }
+            activeTask={activeTask}
           />
         )}
 
-        {activeView === 'tasks' && (
-          <TasksWorkspace
-            tasks={tasks}
-            loading={loadingTasks}
-            error={errorTasks}
-            onCreateTask={handleCreateTask}
-            onUpdateStatus={handleUpdateTaskStatus}
-            onDeleteTask={handleDeleteTask}
-            onRefresh={loadTasks}
-          />
-        )}
+        <Suspense
+          fallback={
+            <div className="workspace-loading-fallback">
+              <LoadingSpinner text="Accessing subsystem..." />
+            </div>
+          }
+        >
+          {activeView === 'tasks' && (
+            <TasksWorkspace
+              tasks={tasks}
+              loading={loadingTasks}
+              error={errorTasks}
+              onCreateTask={handleCreateTask}
+              onUpdateStatus={handleUpdateTaskStatus}
+              onDeleteTask={handleDeleteTask}
+              onRefresh={loadTasks}
+            />
+          )}
 
-        {activeView === 'memories' && (
-          <MemoryWorkspace
-            memories={memories}
-            loading={loadingMemories}
-            error={errorMemories}
-            onCreateMemory={handleCreateMemory}
-            onUpdateMemory={handleUpdateMemory}
-            onDeleteMemory={handleDeleteMemory}
-            onRefresh={loadMemories}
-          />
-        )}
+          {activeView === 'memories' && (
+            <MemoryWorkspace
+              memories={memories}
+              loading={loadingMemories}
+              error={errorMemories}
+              onCreateMemory={handleCreateMemory}
+              onUpdateMemory={handleUpdateMemory}
+              onDeleteMemory={handleDeleteMemory}
+              onRefresh={loadMemories}
+            />
+          )}
 
-        {activeView === 'settings' && (
-          <SettingsWorkspace
-            statusData={statusData}
-            healthData={healthData}
-            loading={loadingSettings}
-            error={null}
-            onRefresh={checkSystemHealth}
-          />
-        )}
+          {activeView === 'settings' && (
+            <SettingsWorkspace
+              statusData={statusData}
+              healthData={healthData}
+              loading={loadingSettings}
+              error={null}
+              onRefresh={checkSystemHealth}
+              settings={interaction.settings}
+              onUpdateSettings={interaction.updateSettings}
+              cameraActive={interaction.cameraActive}
+              onToggleCamera={interaction.toggleCamera}
+            />
+          )}
+        </Suspense>
+
+        {/* Phase 3 Floating Optical & Hand Gesture Monitor HUD */}
+        <CameraGestureMonitor
+          cameraActive={interaction.cameraActive}
+          cameraStream={interaction.cameraStream}
+          cameraError={interaction.cameraError}
+          onToggleCamera={interaction.toggleCamera}
+          gestureStatus={interaction.gestureStatus}
+          detectedGesture={interaction.detectedGesture}
+          gestureConfidence={interaction.gestureConfidence}
+          lastGestureAction={interaction.lastGestureAction}
+          onStartGestureRecognition={interaction.startGestureRecognition}
+          onStopGestureRecognition={interaction.stopGestureRecognition}
+          showPreview={interaction.showCameraPreview}
+          onClosePreview={() => interaction.setShowCameraPreview(false)}
+        />
       </div>
     </div>
   );
