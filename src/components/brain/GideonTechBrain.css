@@ -1,0 +1,291 @@
+/* GideonTechBrain Holographic & Neural Styles */
+
+.gideon-tech-brain-container {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto;
+  user-select: none;
+}
+
+/* SVG Holographic Rings */
+.tech-brain-svg-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.holo-ring {
+  fill: none;
+  transform-origin: center;
+  transition: stroke 0.4s ease, filter 0.4s ease;
+}
+
+/* Outer ring: Dashed rotation */
+.ring-outer-dashed {
+  stroke: rgba(56, 189, 248, 0.4);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 12 18 12;
+  animation: rotateClockwise 35s linear infinite;
+  filter: drop-shadow(0 0 4px rgba(56, 189, 248, 0.3));
+}
+
+/* Mid ring: Segmented scanning */
+.ring-mid-scanning {
+  stroke: rgba(0, 242, 254, 0.5);
+  stroke-width: 2;
+  stroke-dasharray: 40 180;
+  stroke-linecap: round;
+  animation: rotateCounterClockwise 12s linear infinite;
+  filter: drop-shadow(0 0 6px rgba(0, 242, 254, 0.4));
+}
+
+/* Inner ring: Fine ticks */
+.ring-inner-counter {
+  stroke: rgba(129, 140, 248, 0.35);
+  stroke-width: 1;
+  stroke-dasharray: 3 6;
+  animation: rotateClockwise 22s linear infinite;
+}
+
+.holo-crosshair {
+  stroke: rgba(56, 189, 248, 0.6);
+  stroke-width: 1.5;
+}
+
+/* Canvas styling */
+.tech-brain-canvas {
+  position: relative;
+  z-index: 1;
+  display: block;
+}
+
+/* Central HUD Readout */
+.tech-brain-hud {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 0.75rem;
+  text-align: center;
+  z-index: 3;
+}
+
+.brain-state-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.85rem;
+  background: rgba(16, 26, 49, 0.85);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-full);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 0 15px rgba(0, 0, 0, 0.4);
+  margin-bottom: 0.35rem;
+}
+
+.state-pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-cyan);
+  box-shadow: 0 0 8px var(--accent-cyan);
+  animation: pulseDot 1.8s ease-in-out infinite;
+}
+
+.state-title {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  text-transform: uppercase;
+}
+
+.brain-status-text {
+  font-size: 0.95rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+  max-width: 480px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0.02em;
+}
+
+.brain-task-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+  padding: 0.25rem 0.75rem;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: var(--radius-sm);
+  color: #fbbf24;
+  font-size: 0.8rem;
+  font-family: var(--font-mono);
+}
+
+/* Interrupt Button */
+.brain-interrupt-btn {
+  margin-top: 0.5rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.85rem;
+  background: rgba(239, 68, 68, 0.18);
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  color: #fca5a5;
+  border-radius: var(--radius-full);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  z-index: 3;
+}
+
+.brain-interrupt-btn:hover {
+  background: rgba(239, 68, 68, 0.35);
+  border-color: #ef4444;
+  color: #ffffff;
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.5);
+}
+
+.interrupt-icon {
+  font-size: 0.65rem;
+}
+
+/* State-Specific Theme Modifications */
+.state-listening .ring-outer-dashed {
+  stroke: rgba(34, 197, 94, 0.6);
+  filter: drop-shadow(0 0 8px rgba(34, 197, 94, 0.5));
+}
+.state-listening .ring-mid-scanning {
+  stroke: rgba(34, 197, 94, 0.8);
+  animation-duration: 4s;
+}
+.state-listening .state-pulse-dot {
+  background: #22c55e;
+  box-shadow: 0 0 10px #22c55e;
+}
+.state-listening .brain-state-pill {
+  border-color: rgba(34, 197, 94, 0.4);
+}
+
+.state-processing .ring-outer-dashed {
+  stroke: rgba(168, 85, 247, 0.6);
+  animation-duration: 10s;
+  filter: drop-shadow(0 0 8px rgba(168, 85, 247, 0.5));
+}
+.state-processing .ring-mid-scanning {
+  stroke: rgba(168, 85, 247, 0.9);
+  animation-duration: 3s;
+}
+.state-processing .state-pulse-dot {
+  background: #a855f7;
+  box-shadow: 0 0 10px #a855f7;
+}
+.state-processing .brain-state-pill {
+  border-color: rgba(168, 85, 247, 0.4);
+}
+
+.state-speaking .ring-outer-dashed {
+  stroke: rgba(0, 242, 254, 0.8);
+  filter: drop-shadow(0 0 10px rgba(0, 242, 254, 0.6));
+  animation-duration: 15s;
+}
+.state-speaking .ring-mid-scanning {
+  stroke: rgba(0, 242, 254, 1);
+  animation-duration: 6s;
+}
+.state-speaking .state-pulse-dot {
+  background: #00f2fe;
+  box-shadow: 0 0 10px #00f2fe;
+}
+.state-speaking .brain-state-pill {
+  border-color: rgba(0, 242, 254, 0.5);
+}
+
+.state-executing .ring-outer-dashed {
+  stroke: rgba(245, 158, 11, 0.7);
+  animation-duration: 18s;
+}
+.state-executing .ring-mid-scanning {
+  stroke: rgba(245, 158, 11, 0.85);
+  animation-duration: 5s;
+}
+.state-executing .state-pulse-dot {
+  background: #f59e0b;
+  box-shadow: 0 0 10px #f59e0b;
+}
+
+.state-error .ring-outer-dashed {
+  stroke: rgba(239, 68, 68, 0.6);
+}
+.state-error .ring-mid-scanning {
+  stroke: rgba(239, 68, 68, 0.8);
+  animation: none;
+}
+.state-error .state-pulse-dot {
+  background: #ef4444;
+  box-shadow: 0 0 10px #ef4444;
+}
+.state-error .brain-state-pill {
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
+/* Animations */
+@keyframes rotateClockwise {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes rotateCounterClockwise {
+  from {
+    transform: rotate(360deg);
+  }
+  to {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes pulseDot {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.8);
+  }
+}
+
+/* Accessibility: Reduced Motion */
+@media (prefers-reduced-motion: reduce) {
+  .ring-outer-dashed,
+  .ring-mid-scanning,
+  .ring-inner-counter {
+    animation: none !important;
+  }
+  .state-pulse-dot {
+    animation: none !important;
+  }
+}
+
+.reduced-motion .ring-outer-dashed,
+.reduced-motion .ring-mid-scanning,
+.reduced-motion .ring-inner-counter {
+  animation: none !important;
+}
+.reduced-motion .state-pulse-dot {
+  animation: none !important;
+}

@@ -1,0 +1,308 @@
+/* CameraGestureMonitor Floating HUD Styles */
+
+.camera-gesture-monitor-hud {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  width: 290px;
+  background: rgba(11, 19, 37, 0.92);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), 0 0 20px rgba(56, 189, 248, 0.15);
+  backdrop-filter: blur(12px);
+  z-index: 50;
+  overflow: hidden;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.camera-gesture-monitor-hud.minimized {
+  width: 200px;
+}
+
+.monitor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 0.85rem;
+  background: rgba(16, 26, 49, 0.8);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.monitor-title-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.status-beacon {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #64748b;
+}
+
+.status-beacon.online {
+  background: #22c55e;
+  box-shadow: 0 0 8px #22c55e;
+}
+
+.status-beacon.offline {
+  background: #ef4444;
+}
+
+.monitor-title {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
+.monitor-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.monitor-action-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.2rem 0.35rem;
+  border-radius: var(--radius-sm);
+  transition: color 0.2s, background 0.2s;
+}
+
+.monitor-action-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.monitor-action-btn.close:hover {
+  color: #ef4444;
+}
+
+.monitor-body {
+  padding: 0.75rem;
+}
+
+.monitor-viewport-container {
+  position: relative;
+  width: 100%;
+  height: 160px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: #000000;
+  border: 1px solid var(--border-subtle);
+}
+
+.monitor-video-feed {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1); /* Mirror view for natural interaction */
+}
+
+/* HUD Reticle Overlay */
+.viewport-hud-reticle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+
+.reticle-corner {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--accent-cyan);
+}
+
+.reticle-corner.top-left {
+  top: 8px;
+  left: 8px;
+  border-right: none;
+  border-bottom: none;
+}
+
+.reticle-corner.top-right {
+  top: 8px;
+  right: 8px;
+  border-left: none;
+  border-bottom: none;
+}
+
+.reticle-corner.bottom-left {
+  bottom: 8px;
+  left: 8px;
+  border-right: none;
+  border-top: none;
+}
+
+.reticle-corner.bottom-right {
+  bottom: 8px;
+  right: 8px;
+  border-left: none;
+  border-top: none;
+}
+
+.reticle-scanline {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(0, 242, 254, 0.7), transparent);
+  animation: scanline 3s linear infinite;
+  opacity: 0.6;
+}
+
+@keyframes scanline {
+  0% {
+    top: 0;
+  }
+  100% {
+    top: 100%;
+  }
+}
+
+/* Gesture Pill */
+.gesture-readout-pill {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  right: 8px;
+  padding: 0.3rem 0.6rem;
+  background: rgba(16, 26, 49, 0.88);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  backdrop-filter: blur(6px);
+}
+
+.gesture-readout-pill.detected {
+  border-color: rgba(34, 197, 94, 0.6);
+  background: rgba(16, 49, 30, 0.88);
+}
+
+.gesture-name {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-transform: capitalize;
+  font-family: var(--font-mono);
+}
+
+.gesture-readout-pill.detected .gesture-name {
+  color: #4ade80;
+}
+
+.gesture-score {
+  font-size: 0.7rem;
+  font-family: var(--font-mono);
+  color: var(--accent-cyan);
+  font-weight: 600;
+}
+
+/* Action Dispatch Banner */
+.gesture-action-alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 0.5rem;
+  padding: 0.35rem 0.6rem;
+  background: rgba(56, 189, 248, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  border-radius: var(--radius-sm);
+}
+
+.action-tag {
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: var(--accent-cyan);
+  font-family: var(--font-mono);
+  letter-spacing: 0.05em;
+}
+
+.action-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-transform: uppercase;
+}
+
+/* Controls */
+.monitor-footer {
+  margin-top: 0.75rem;
+}
+
+.monitor-controls-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.btn-hud-toggle {
+  flex: 1;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  background: rgba(16, 26, 49, 0.9);
+  border: 1px solid var(--border-medium);
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-hud-toggle:hover:not(:disabled) {
+  border-color: var(--accent-cyan);
+  color: var(--text-primary);
+}
+
+.btn-hud-toggle.active {
+  background: rgba(0, 242, 254, 0.15);
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+}
+
+.btn-hud-toggle:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.privacy-guarantee-note {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.6rem;
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  line-height: 1.3;
+}
+
+.privacy-lock-icon {
+  font-size: 0.75rem;
+}
+
+.monitor-error-card {
+  padding: 1rem;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: var(--radius-sm);
+  color: #fca5a5;
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.monitor-error-card .error-icon {
+  font-size: 1.25rem;
+  display: block;
+  margin-bottom: 0.35rem;
+}
