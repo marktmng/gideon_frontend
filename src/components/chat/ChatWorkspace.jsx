@@ -1,13 +1,14 @@
 /**
- * ChatWorkspace — Gideon Phase 3 Futuristic AI Command Centre.
+ * ChatWorkspace — Gideon Phase 4 Futuristic AI Command Centre.
  * Centers around the GideonTechBrain as the visual identity, flanked by
- * tactical telemetry status monitors, conversation stream feeds, and voice/gesture controls.
+ * tactical telemetry status monitors, conversation stream feeds, voice/gesture controls,
+ * and live desktop automation status panels.
  */
-
 import React, { useRef, useEffect } from 'react';
 import MessageItem from './MessageItem';
 import MessageComposer from './MessageComposer';
 import GideonTechBrain from '../brain/GideonTechBrain';
+import DesktopTaskPanel from '../desktop/DesktopTaskPanel';
 import LoadingSpinner from '../common/LoadingSpinner';
 import ErrorMessage from '../common/ErrorMessage';
 import DemoBadge from '../common/DemoBadge';
@@ -26,9 +27,15 @@ export default function ChatWorkspace({
   onRetry,
   onPromptSelect,
 
-  // Phase 3 Interaction Controller props
+  // Phase 3 & 4 Interaction Controller props
   interactionState = 'idle',
   audioLevel = 0,
+  speechLevel = 0,
+  speechPulse = 0,
+  currentViseme = null,
+  visemePose = null,
+  visemeTimeline = null,
+  utteranceId = null,
   statusMessage = 'Gideon Neural Core Online. Standing by.',
   interimTranscript = '',
   isListening = false,
@@ -44,6 +51,11 @@ export default function ChatWorkspace({
   voiceEnabled = true,
   onToggleVoice = null,
   activeTask = null,
+
+  // Phase 4 Desktop Task props
+  activeDesktopTask = null,
+  onCancelDesktopTask = null,
+  onConfirmDesktopTask = null,
 }) {
   const messagesEndRef = useRef(null);
 
@@ -56,10 +68,10 @@ export default function ChatWorkspace({
   }, [messages, sending, streamingText]);
 
   const starterPrompts = [
+    "Gideon, open File Explorer.",
+    "Open calculator.",
     "What are your current operational capabilities?",
     "Remember that I prefer concise, bulleted responses.",
-    "Calculate coordinates for a temporal jump.",
-    "Help me design a software architecture."
   ];
 
   const isDemo = statusData ? statusData.is_demo : true;
@@ -135,15 +147,55 @@ export default function ChatWorkspace({
       {/* Hero GideonTechBrain Section */}
       <section className="tech-brain-hero-section" aria-label="Gideon Neural Brain Core">
         <GideonTechBrain
-          state={sending ? 'processing' : isSpeaking ? 'speaking' : isListening ? 'listening' : interactionState}
+          state={
+            activeDesktopTask && ['planning', 'awaiting_confirmation', 'executing'].includes(activeDesktopTask.status)
+              ? 'executing'
+              : sending
+              ? 'processing'
+              : isSpeaking
+              ? 'speaking'
+              : isListening
+              ? 'listening'
+              : interactionState
+          }
           audioLevel={audioLevel}
-          statusText={statusMessage}
-          taskDescription={activeTask ? activeTask.title : null}
+          speechLevel={speechLevel}
+          speechPulse={speechPulse}
+          isSpeaking={isSpeaking}
+          viseme={currentViseme}
+          visemePose={visemePose}
+          visemeTimeline={visemeTimeline}
+          utteranceId={utteranceId}
+          statusText={
+            activeDesktopTask && activeDesktopTask.status === 'executing'
+              ? `Executing Desktop Action: ${activeDesktopTask.action}`
+              : statusMessage
+          }
+          taskDescription={
+            activeDesktopTask
+              ? `Desktop Task: ${activeDesktopTask.action}`
+              : activeTask
+              ? activeTask.title
+              : null
+          }
           reducedMotion={reducedMotion}
-          size="medium"
+          size="large"
           onInterrupt={sending ? onStopGeneration : isSpeaking ? onStopSpeaking : onInterruption}
         />
       </section>
+
+      {/* Live Desktop Automation Task Widget (if active) */}
+      {activeDesktopTask && (
+        <div className="chat-active-desktop-task-bar">
+          <DesktopTaskPanel
+            task={activeDesktopTask}
+            onCancel={onCancelDesktopTask}
+            onConfirmRequest={onConfirmDesktopTask}
+            reducedMotion={reducedMotion}
+            compact={true}
+          />
+        </div>
+      )}
 
       {/* Central Conversation Stream Area */}
       <div className="chat-messages-container command-stream-container">
@@ -159,7 +211,7 @@ export default function ChatWorkspace({
           <div className="chat-empty-state">
             <h2 className="empty-title">Greetings. I am Gideon.</h2>
             <p className="empty-subtitle">
-              Your personal artificial intelligence assistant. How may I assist you today?
+              Your personal artificial intelligence command core and Windows desktop automation assistant.
             </p>
             <div className="empty-badge-wrapper">
               <DemoBadge
@@ -196,7 +248,7 @@ export default function ChatWorkspace({
             )}
 
             {messages.map((msg) => (
-              <MessageItem key={msg.id} message={msg} />
+              <MessageItem key={msg.id} message={msg} reducedMotion={reducedMotion} />
             ))}
 
             {streamingText ? (

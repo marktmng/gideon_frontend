@@ -3,22 +3,25 @@ import Header from './components/layout/Header';
 import Sidebar from './components/layout/Sidebar';
 import ChatWorkspace from './components/chat/ChatWorkspace';
 import CameraGestureMonitor from './components/vision/CameraGestureMonitor';
+import CommandPalette from './components/common/CommandPalette';
 import LoadingSpinner from './components/common/LoadingSpinner';
 import * as conversationsApi from './services/conversations';
 import * as messagesApi from './services/messages';
 import * as tasksApi from './services/tasks';
 import * as memoriesApi from './services/memories';
 import * as assistantApi from './services/assistant';
+import * as desktopApi from './services/desktop';
 import useInteractionController from './services/useInteractionController';
 import './App.css';
 
 // Performance Optimization: Code-split secondary workspaces so initial bundle loads faster
+const DesktopWorkspace = lazy(() => import('./components/desktop/DesktopWorkspace'));
 const TasksWorkspace = lazy(() => import('./components/tasks/TasksWorkspace'));
 const MemoryWorkspace = lazy(() => import('./components/memory/MemoryWorkspace'));
 const SettingsWorkspace = lazy(() => import('./components/settings/SettingsWorkspace'));
 
 export default function App() {
-  const [activeView, setActiveView] = useState('chat'); // 'chat' | 'tasks' | 'memories' | 'settings'
+  const [activeView, setActiveView] = useState('chat'); // 'chat' | 'desktop' | 'tasks' | 'memories' | 'settings'
   const [conversations, setConversations] = useState([]);
   const [activeConversationId, setActiveConversationId] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -26,6 +29,10 @@ export default function App() {
   const [memories, setMemories] = useState([]);
   const [healthData, setHealthData] = useState(null);
   const [statusData, setStatusData] = useState(null);
+
+  // Phase 4 Desktop Automation state
+  const [activeDesktopTask, setActiveDesktopTask] = useState(null);
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
 
   const [loadingConversations, setLoadingConversations] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
@@ -128,23 +135,40 @@ export default function App() {
     }
   }, []);
 
-  // Optimized Initial Startup: Only fetch conversation & health essentials for primary screen
+  // Ultra-Fast Initial Startup: Concurrently fetch primary conversation & health; defer secondary datasets
   useEffect(() => {
-    checkSystemHealth();
-    loadConversations().then((items) => {
-      if (items.length > 0) {
-        setActiveConversationId(items[0].id);
-        loadMessages(items[0].id);
+    // Parallelize essential primary view fetches
+    Promise.allSettled([
+      checkSystemHealth(),
+      loadConversations().then((items) => {
+        if (items && items.length > 0) {
+          setActiveConversationId(items[0].id);
+          return loadMessages(items[0].id);
+        }
+      }),
+    ]);
+
+    // Defer secondary data (tasks & memories) to idle time (4s) so initial render is instantaneous
+    let idleId = null;
+    let timerId = null;
+    if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+      idleId = window.requestIdleCallback(() => {
+        if (!tasksFetchedRef.current) loadTasks();
+        if (!memoriesFetchedRef.current) loadMemories();
+      }, { timeout: 4000 });
+    } else {
+      timerId = setTimeout(() => {
+        if (!tasksFetchedRef.current) loadTasks();
+        if (!memoriesFetchedRef.current) loadMemories();
+      }, 4000);
+    }
+
+    return () => {
+      if (idleId && typeof window !== 'undefined' && 'cancelIdleCallback' in window) {
+        window.cancelIdleCallback(idleId);
       }
-    });
-
-    // Defer non-critical background data during idle time
-    const timer = setTimeout(() => {
-      if (!tasksFetchedRef.current) loadTasks();
-      if (!memoriesFetchedRef.current) loadMemories();
-    }, 150);
-
-    return () => clearTimeout(timer);
+      if (timerId) clearTimeout(timerId);
+    };
   }, [checkSystemHealth, loadConversations, loadMessages, loadTasks, loadMemories]);
 
   // Lazy load when tabs are clicked if not already loaded
@@ -174,6 +198,57 @@ export default function App() {
     onHaltGeneration: handleStopGeneration,
     activeTask,
   });
+
+  // Emergency Global Stop control
+  const handleGlobalStop = useCallback(async () => {
+    handleStopGeneration();
+    interaction.stopSpeaking();
+    interaction.stopListening();
+    setActiveDesktopTask(null);
+    try {
+      await desktopApi.stopAllDesktopTasks();
+    } catch {
+      // Ignore network error on stop
+    }
+  }, [handleStopGeneration, interaction]);
+
+  // Keyboard shortcut listeners:
+  // - Ctrl+K: Command Palette (guarded so it never accidentally triggers while typing into a text field)
+  // - Ctrl+Shift+H (or Ctrl+Shift+X): Emergency Global Stop (triggers anywhere, including inside text inputs)
+  useEffect(() => {
+    const handleGlobalKeyDown = (e) => {
+      const isModifier = e.ctrlKey || e.metaKey;
+      const key = e.key.toLowerCase();
+
+      // Emergency Global Halt: Ctrl+Shift+H or Ctrl+Shift+X
+      if (isModifier && e.shiftKey && (key === 'h' || key === 'x')) {
+        e.preventDefault();
+        handleGlobalStop();
+        return;
+      }
+
+      // Check if user is typing in a text field
+      const target = e.target;
+      const isTextInput = target && (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.isContentEditable
+      );
+
+      // Ordinary shortcuts must NOT trigger while typing into a text input/textarea
+      if (isTextInput) {
+        return;
+      }
+
+      // Command Palette: Ctrl+K / Cmd+K
+      if (isModifier && key === 'k') {
+        e.preventDefault();
+        setIsCommandPaletteOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [handleGlobalStop]);
 
   // Select a conversation
   const handleSelectConversation = (convId) => {
@@ -310,7 +385,39 @@ export default function App() {
     }
   };
 
-  // Task actions
+  // Phase 4 Desktop Task execution from palette / UI
+  const handleExecuteDesktopAction = async (action, params = {}) => {
+    try {
+      const task = await desktopApi.createDesktopTask(action, params);
+      setActiveDesktopTask(task);
+      return task;
+    } catch (err) {
+      setErrorMessages(err.message || 'Desktop action failed to execute.');
+      return null;
+    }
+  };
+
+  const handleCancelDesktopTask = async (taskId) => {
+    try {
+      const cancelled = await desktopApi.cancelDesktopTask(taskId);
+      setActiveDesktopTask(cancelled);
+    } catch (err) {
+      console.warn('Task cancel error:', err);
+    }
+  };
+
+  const handleConfirmDesktopTask = async (taskId, action = null, target = null) => {
+    try {
+      const act = action || activeDesktopTask?.action;
+      const tgt = target || activeDesktopTask?.target_app;
+      const confirmed = await desktopApi.confirmDesktopTask(taskId, true, null, act, tgt);
+      setActiveDesktopTask(confirmed);
+    } catch (err) {
+      console.warn('Task confirmation error:', err);
+    }
+  };
+
+  // Task actions (Directive tasks)
   const handleCreateTask = async (taskData) => {
     const newTask = await tasksApi.createTask(taskData);
     setTasks((prev) => [newTask, ...prev]);
@@ -394,6 +501,8 @@ export default function App() {
           onToggleSidebar={() => setIsSidebarOpen((prev) => !prev)}
           isSidebarOpen={isSidebarOpen}
           statusData={statusData}
+          onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+          onGlobalStop={handleGlobalStop}
         />
 
         {activeView === 'chat' && (
@@ -410,9 +519,15 @@ export default function App() {
             onStopGeneration={handleStopGeneration}
             onRetry={() => activeConversationId && loadMessages(activeConversationId)}
             onPromptSelect={handleSendMessage}
-            // Phase 3 Props
+            // Phase 3 & 4 Props
             interactionState={interaction.state}
             audioLevel={interaction.audioLevel}
+            speechLevel={interaction.speechLevel}
+            speechPulse={interaction.speechPulse}
+            currentViseme={interaction.currentViseme}
+            visemePose={interaction.visemePose}
+            visemeTimeline={interaction.visemeTimeline}
+            utteranceId={interaction.utteranceId}
             statusMessage={interaction.statusMessage}
             interimTranscript={interaction.interimTranscript}
             isListening={interaction.isListening}
@@ -430,6 +545,9 @@ export default function App() {
               interaction.updateSettings({ voiceEnabled: !interaction.settings.voiceEnabled })
             }
             activeTask={activeTask}
+            activeDesktopTask={activeDesktopTask}
+            onCancelDesktopTask={handleCancelDesktopTask}
+            onConfirmDesktopTask={handleConfirmDesktopTask}
           />
         )}
 
@@ -440,6 +558,13 @@ export default function App() {
             </div>
           }
         >
+          {activeView === 'desktop' && (
+            <DesktopWorkspace
+              reducedMotion={interaction.settings.reducedMotion}
+              onGlobalStop={handleGlobalStop}
+            />
+          )}
+
           {activeView === 'tasks' && (
             <TasksWorkspace
               tasks={tasks}
@@ -493,6 +618,25 @@ export default function App() {
           onStopGestureRecognition={interaction.stopGestureRecognition}
           showPreview={interaction.showCameraPreview}
           onClosePreview={() => interaction.setShowCameraPreview(false)}
+        />
+
+        {/* Phase 4 21st.dev Command Palette (Ctrl+K) */}
+        <CommandPalette
+          isOpen={isCommandPaletteOpen}
+          onClose={() => setIsCommandPaletteOpen(false)}
+          onViewChange={(v) => {
+            interaction.stopSpeaking();
+            setActiveView(v);
+          }}
+          onExecuteDesktopAction={handleExecuteDesktopAction}
+          onGlobalStop={handleGlobalStop}
+          onToggleVoice={() =>
+            interaction.updateSettings({ voiceEnabled: !interaction.settings.voiceEnabled })
+          }
+          onToggleListening={interaction.toggleListening}
+          onToggleCamera={interaction.toggleCamera}
+          onNewConversation={handleNewConversation}
+          reducedMotion={interaction.settings.reducedMotion}
         />
       </div>
     </div>

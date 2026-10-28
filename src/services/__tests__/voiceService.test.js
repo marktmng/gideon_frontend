@@ -1,4 +1,5 @@
 import voiceService from '../voiceService';
+import { VISEME_CODES } from '../lipsyncService';
 
 describe('VoiceService', () => {
   afterEach(() => {
@@ -30,14 +31,44 @@ describe('VoiceService', () => {
     expect(onEnd).toHaveBeenCalled();
   });
 
-  test('cancels active speech when stopSpeaking is called', () => {
+  test('cancels active speech and resets viseme state when stopSpeaking is called', () => {
     voiceService.speak('Testing speech output', { rate: 1.0 });
+    expect(voiceService.isSpeaking).toBe(true);
+    expect(voiceService.visemeTimeline).not.toBeNull();
+
     voiceService.stopSpeaking();
     expect(window.speechSynthesis.cancel).toHaveBeenCalled();
     expect(voiceService.isSpeaking).toBe(false);
+    expect(voiceService.currentViseme).toBe(VISEME_CODES.REST);
+    expect(voiceService.speechLevel).toBe(0);
+    expect(voiceService.visemeTimeline).toBeNull();
   });
 
-  test('starts recognition and handles final transcript', async () => {
+  test('handles word boundary events and ignores stale events from superseded utterances', () => {
+    const firstResult = voiceService.speak('First utterance text');
+    const firstUtterance = voiceService.currentUtterance;
+    expect(firstResult).not.toBeNull();
+
+    // Start a second utterance that replaces the first
+    const secondResult = voiceService.speak('Mum made me move');
+    const secondUtterance = voiceService.currentUtterance;
+    expect(secondResult.utteranceId).not.toBe(firstResult.utteranceId);
+
+    // Firing onend on the stale first utterance must NOT stop the active second utterance
+    if (firstUtterance && firstUtterance.onend) {
+      firstUtterance.onend();
+    }
+    expect(voiceService.isSpeaking).toBe(true);
+    expect(voiceService.currentUtteranceId).toBe(secondResult.utteranceId);
+
+    // Firing word boundary on active second utterance updates clock anchor safely
+    if (secondUtterance && secondUtterance.onboundary) {
+      secondUtterance.onboundary({ name: 'word', charIndex: 4 });
+    }
+    expect(voiceService.visemeTimeline.mode).toBe('word_boundary_aligned');
+  });
+
+  test('starts recognition and handles final transcript without activating AI speaking state', async () => {
     const onFinal = jest.fn();
     const onInterim = jest.fn();
 
@@ -48,6 +79,8 @@ describe('VoiceService', () => {
 
     expect(started).toBe(true);
     expect(voiceService.recognition).not.toBeNull();
+    expect(voiceService.isSpeaking).toBe(false);
+    expect(voiceService.speechLevel).toBe(0);
 
     // Simulate speech recognition results
     const mockEvent = {
@@ -59,6 +92,7 @@ describe('VoiceService', () => {
 
     voiceService.recognition.onresult(mockEvent);
     expect(onFinal).toHaveBeenCalledWith('calculate trajectory');
+    expect(voiceService.isSpeaking).toBe(false);
   });
 
   test('prevents duplicate final transcript emissions', async () => {
@@ -86,5 +120,12 @@ describe('VoiceService', () => {
     expect(onError).toHaveBeenCalledWith(
       expect.stringContaining('Microphone access denied')
     );
+  });
+
+  test('findBestGideonVoice selects Amy Louise Pemberton British female voice', () => {
+    const selectedVoice = voiceService.findBestGideonVoice();
+    expect(selectedVoice).not.toBeNull();
+    expect(selectedVoice.lang.toLowerCase()).toContain('gb');
+    expect(selectedVoice.name).toContain('Amy Louise Pemberton');
   });
 });
