@@ -1,0 +1,52 @@
+/* VoiceReactiveDotField — Full-Area Kokonut Halftone Membrane in Gideon's Color Palette */
+
+.voice-reactive-dot-field {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none !important;
+  user-select: none;
+  z-index: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  color: var(--accent-blue, #38bdf8);
+  transition: opacity 0.45s ease-out;
+}
+
+/* Full-bleed mode: spans 100% of the Command Centre workspace from top to bottom */
+.voice-reactive-dot-field.full-bleed {
+  position: absolute !important;
+  inset: 0 !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  transform: none !important;
+  width: 100% !important;
+  height: 100% !important;
+  z-index: 0;
+  -webkit-mask-image: none !important;
+  mask-image: none !important;
+}
+
+.voice-reactive-dot-field.state-speaking {
+  opacity: 1;
+  color: var(--accent-cyan, #00f2fe);
+}
+
+.voice-reactive-dot-field.state-idle,
+.voice-reactive-dot-field.state-listening,
+.voice-reactive-dot-field.state-processing,
+.voice-reactive-dot-field.state-executing,
+.voice-reactive-dot-field.state-error {
+  opacity: 0.94;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-reactive-dot-field {
+    transition: none !important;
+  }
+}

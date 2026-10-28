@@ -1,25 +1,141 @@
 /**
  * Modular Voice Service for Gideon.
  * Encapsulates Web Speech API SpeechRecognition (STT), SpeechSynthesis (TTS),
- * and Web Audio API microphone volume analysis.
+ * playback-synchronized viseme lipsync orchestration, and Web Audio API microphone volume analysis.
+ *
+ * Strictly separates:
+ * - User microphone input (`isListening`, microphone `onAudioLevel`)
+ * - Gideon outgoing speech (`isSpeaking`, `speechLevel`, `speechPulse`, `currentViseme`, `visemeTimeline`)
  */
+
+import {
+  VISEME_CODES,
+  getVisemePose,
+  LipsyncTimelineController,
+} from './lipsyncService';
 
 class VoiceService {
   constructor() {
+    // Microphone / STT state (strictly user input)
     this.recognition = null;
     this.isListening = false;
-    this.isSpeaking = false;
     this.audioContext = null;
     this.analyser = null;
     this.audioStream = null;
     this.audioAnimId = null;
-    this.currentUtterance = null;
     this.onAudioLevelCallback = null;
+
+    // Outgoing Speech / TTS & Lipsync state (strictly Gideon output)
+    this.isSpeaking = false;
+    this.currentUtterance = null;
+    this.currentUtteranceId = null;
+    this._utteranceCounter = 0;
+    this.lipsync = new LipsyncTimelineController();
+    this.visemeTimeline = null;
+    this.currentViseme = VISEME_CODES.REST;
+    this.currentVisemePose = getVisemePose(VISEME_CODES.REST);
+    this.speechLevel = 0;
+    this.speechPulse = 0;
+    this.speechTickerId = null;
+    this.speechListeners = new Set();
+
+    this.cachedVoices = [];
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      this.cachedVoices = window.speechSynthesis.getVoices() || [];
+      window.speechSynthesis.onvoiceschanged = () => {
+        this.cachedVoices = window.speechSynthesis.getVoices() || [];
+      };
+    }
+  }
+
+  _now() {
+    return typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now();
+  }
+
+  /**
+   * Subscribe to outgoing AI speech lifecycle & viseme updates.
+   * Never triggered by microphone activity.
+   */
+  subscribeSpeech(listener) {
+    if (typeof listener !== 'function') return () => {};
+    this.speechListeners.add(listener);
+    listener(this.getSpeechState());
+    return () => {
+      this.speechListeners.delete(listener);
+    };
+  }
+
+  _notifySpeech(extra = {}) {
+    const snapshot = {
+      ...this.getSpeechState(),
+      ...extra,
+    };
+    this.speechListeners.forEach((listener) => {
+      try {
+        listener(snapshot);
+      } catch (err) {
+        console.error('Speech listener error:', err);
+      }
+    });
+  }
+
+  /**
+   * Get current outgoing speech & viseme state snapshot.
+   */
+  getSpeechState() {
+    return {
+      isSpeaking: this.isSpeaking,
+      utteranceId: this.currentUtteranceId,
+      viseme: this.currentViseme,
+      visemePose: this.currentVisemePose,
+      speechLevel: this.speechLevel,
+      speechPulse: this.speechPulse,
+      visemeTimeline: this.visemeTimeline,
+    };
+  }
+
+  /**
+   * High-frequency, allocation-light sampler for 60fps Canvas renderers
+   * (`GideonTechBrain` and `VoiceReactiveDotField`).
+   */
+  sampleSpeechState(nowMs = this._now()) {
+    if (!this.isSpeaking || !this.currentUtteranceId) {
+      return {
+        isSpeaking: false,
+        utteranceId: null,
+        viseme: VISEME_CODES.REST,
+        visemePose: getVisemePose(VISEME_CODES.REST),
+        speechLevel: 0,
+        speechPulse: 0,
+        isPause: true,
+      };
+    }
+
+    const sampled = this.lipsync.sample(nowMs, this.currentUtteranceId);
+    this.currentViseme = sampled.viseme;
+    this.currentVisemePose = sampled.pose;
+    this.speechLevel = sampled.speechLevel;
+    this.speechPulse = sampled.speechPulse;
+
+    return {
+      isSpeaking: true,
+      utteranceId: this.currentUtteranceId,
+      viseme: sampled.viseme,
+      visemePose: sampled.pose,
+      speechLevel: sampled.speechLevel,
+      speechPulse: sampled.speechPulse,
+      isPause: sampled.isPause,
+      elapsedMs: sampled.elapsedMs,
+    };
   }
 
   isSpeechRecognitionSupported() {
-    return typeof window !== 'undefined' && 
-      !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+    return (
+      typeof window !== 'undefined' &&
+      !!(window.SpeechRecognition || window.webkitSpeechRecognition)
+    );
   }
 
   isSpeechSynthesisSupported() {
@@ -28,13 +144,76 @@ class VoiceService {
 
   getVoices() {
     if (!this.isSpeechSynthesisSupported()) return [];
-    return window.speechSynthesis.getVoices();
+    const live = window.speechSynthesis.getVoices();
+    if (live && live.length > 0) {
+      this.cachedVoices = live;
+      return live;
+    }
+    return this.cachedVoices || [];
+  }
+
+  /**
+   * Find the optimal British female voice matching Actress Amy Louise Pemberton
+   * (Gideon AI from DC's Legends of Tomorrow).
+   */
+  findBestGideonVoice(voices = null) {
+    const list = voices || this.getVoices();
+    if (!list || list.length === 0) return null;
+
+    // 1. Look for explicit British English (en-GB / en-UK) voices
+    const gbVoices = list.filter((v) => {
+      const lang = (v.lang || '').toLowerCase().replace('_', '-');
+      return lang === 'en-gb' || lang.startsWith('en-gb') || lang === 'en-uk';
+    });
+
+    // Top tier: Known British Natural / Female voices (Libby, Mia, Hazel, Google UK English Female, Amy, Sonia, Serena, Victoria)
+    const preferredBritishFemale = gbVoices.find((v) => {
+      const name = (v.name || '').toLowerCase();
+      return (
+        name.includes('amy') ||
+        name.includes('pemberton') ||
+        name.includes('libby') ||
+        name.includes('mia') ||
+        name.includes('hazel') ||
+        name.includes('sonia') ||
+        name.includes('serena') ||
+        name.includes('victoria') ||
+        name.includes('female') ||
+        name.includes('natural') ||
+        name.includes('online')
+      );
+    });
+    if (preferredBritishFemale) return preferredBritishFemale;
+    if (gbVoices.length > 0) return gbVoices[0];
+
+    // 2. Look for any English female voice (US/AU/CA)
+    const enFemale = list.find((v) => {
+      const name = (v.name || '').toLowerCase();
+      const lang = (v.lang || '').toLowerCase();
+      const isEnglish = lang.startsWith('en');
+      const isFemale =
+        name.includes('female') ||
+        name.includes('zira') ||
+        name.includes('jenny') ||
+        name.includes('samantha') ||
+        name.includes('siri') ||
+        name.includes('karen') ||
+        name.includes('victoria') ||
+        name.includes('natural');
+      return isEnglish && isFemale;
+    });
+    if (enFemale) return enFemale;
+
+    // 3. Fallback to any English voice
+    const anyEn = list.find((v) => (v.lang || '').toLowerCase().startsWith('en'));
+    return anyEn || list[0];
   }
 
   /**
    * Start push-to-talk / voice recognition session.
+   * Strictly measures user microphone input and never activates AI speaking state.
    */
-  async startListening({ onInterim, onFinal, onError, onStateChange, onAudioLevel }) {
+  async startListening({ onInterim, onFinal, onError, onStateChange, onAudioLevel } = {}) {
     if (!this.isSpeechRecognitionSupported()) {
       if (onError) onError('Speech recognition is not supported in this browser.');
       return false;
@@ -141,21 +320,34 @@ class VoiceService {
   }
 
   /**
-   * Speak response text via window.speechSynthesis.
+   * Speak response text via window.speechSynthesis and synchronize the viseme timeline.
    */
-  speak(text, { voiceURI, rate = 1.0, pitch = 1.0, onStart, onEnd, onError } = {}) {
+  speak(
+    text,
+    {
+      voiceURI,
+      rate = 1.0,
+      pitch = 1.0,
+      alignment = null,
+      onStart,
+      onEnd,
+      onError,
+      onVisemeChange,
+      onBoundary,
+    } = {}
+  ) {
     if (!this.isSpeechSynthesisSupported()) {
       if (onEnd) onEnd();
-      return;
+      return null;
     }
 
-    // Cancel existing speech first
+    // Cancel any existing speech and invalidate prior utterance IDs first
     this.stopSpeaking();
 
     const sanitized = this.sanitizeTextForSpeech(text);
     if (!sanitized) {
       if (onEnd) onEnd();
-      return;
+      return null;
     }
 
     try {
@@ -168,59 +360,229 @@ class VoiceService {
 
       if (!UtteranceClass) {
         if (onEnd) onEnd();
-        return;
+        return null;
       }
+
+      this._utteranceCounter += 1;
+      const utteranceId = `utt-${this._utteranceCounter}-${Date.now()}`;
 
       const utterance = new UtteranceClass(sanitized);
-      utterance.rate = Math.max(0.7, Math.min(rate || 1.0, 1.8));
-      utterance.pitch = Math.max(0.8, Math.min(pitch || 1.0, 1.4));
+      // Default rate and pitch tuned for Amy Louise Pemberton's articulate, crisp British Gideon delivery
+      const effectiveRate = Math.max(0.7, Math.min(rate || 1.02, 1.8));
+      const effectivePitch = Math.max(0.8, Math.min(pitch || 1.06, 1.4));
+      utterance.rate = effectiveRate;
+      utterance.pitch = effectivePitch;
 
-      // Select voice if specified
+      // Select voice: user-specified, or automatic Amy Louise Pemberton British female voice
+      const voices = this.getVoices();
+      let chosenVoice = null;
       if (voiceURI) {
-        const voices = this.getVoices();
-        const selected = voices.find((v) => v.voiceURI === voiceURI);
-        if (selected) {
-          utterance.voice = selected;
-        }
+        chosenVoice = voices.find((v) => v.voiceURI === voiceURI);
+      }
+      if (!chosenVoice) {
+        chosenVoice = this.findBestGideonVoice(voices);
+      }
+      if (chosenVoice) {
+        utterance.voice = chosenVoice;
       }
 
-      this.isSpeaking = true;
-      this.currentUtterance = utterance;
-      if (onStart) onStart();
+      const locale = chosenVoice?.lang || 'en-GB';
 
-      utterance.onstart = () => {
+      // Prepare the viseme timeline for this utterance
+      const timeline = this.lipsync.prepare(sanitized, {
+        utteranceId,
+        rate: effectiveRate,
+        locale,
+        alignment,
+      });
+
+      this.currentUtteranceId = utteranceId;
+      this.currentUtterance = utterance;
+      this.visemeTimeline = timeline;
+      this.isSpeaking = true;
+
+      // Start timeline clock immediately; re-anchor on actual browser `onstart`
+      const initialNow = this._now();
+      this.lipsync.start(utteranceId, initialNow);
+      const initialSample = this.sampleSpeechState(initialNow);
+
+      let hasEmittedStart = false;
+      const emitStartOnce = () => {
+        if (this.currentUtteranceId !== utteranceId) return;
         this.isSpeaking = true;
         this.currentUtterance = utterance;
-        if (onStart) onStart();
+        this.lipsync.start(utteranceId, this._now());
+        this._startSpeechTicker(utteranceId, onVisemeChange);
+        this._notifySpeech({
+          speechStart: true,
+          speechEnd: false,
+          speechCancelled: false,
+        });
+        if (!hasEmittedStart) {
+          hasEmittedStart = true;
+          if (onStart) onStart({ utteranceId, timeline });
+        }
+        if (onVisemeChange) {
+          onVisemeChange(initialSample);
+        }
+      };
+
+      utterance.onstart = () => {
+        emitStartOnce();
+      };
+
+      utterance.onboundary = (event) => {
+        // Ignore stale events from earlier utterances
+        if (this.currentUtteranceId !== utteranceId || !this.isSpeaking) return;
+        if (event && typeof event.charIndex === 'number') {
+          this.lipsync.onWordBoundary(utteranceId, event.charIndex, this._now());
+          const updated = this.sampleSpeechState(this._now());
+          this._notifySpeech({ wordBoundary: event.charIndex });
+          if (onVisemeChange) onVisemeChange(updated);
+          if (onBoundary) onBoundary(event, updated);
+        }
+      };
+
+      utterance.onpause = () => {
+        if (this.currentUtteranceId !== utteranceId) return;
+        this.lipsync.pause(utteranceId, this._now());
+        this.currentViseme = VISEME_CODES.REST;
+        this.currentVisemePose = getVisemePose(VISEME_CODES.REST);
+        this.speechLevel = 0;
+        this.speechPulse = 0;
+        this._notifySpeech({ speechPaused: true });
+      };
+
+      utterance.onresume = () => {
+        if (this.currentUtteranceId !== utteranceId) return;
+        this.lipsync.resume(utteranceId, this._now());
+        this._notifySpeech({ speechPaused: false });
+      };
+
+      const finishUtterance = () => {
+        // Guard against stale events from replaced/cancelled utterances
+        if (this.currentUtteranceId !== utteranceId) return;
+        this._stopSpeechTicker();
+        this.lipsync.stop(utteranceId);
+        this.isSpeaking = false;
+        this.currentUtterance = null;
+        this.currentUtteranceId = null;
+        this.currentViseme = VISEME_CODES.REST;
+        this.currentVisemePose = getVisemePose(VISEME_CODES.REST);
+        this.speechLevel = 0;
+        this.speechPulse = 0;
+        this.visemeTimeline = null;
+        this._notifySpeech({
+          speechStart: false,
+          speechEnd: true,
+          speechCancelled: false,
+        });
+        if (onVisemeChange) {
+          onVisemeChange(this.getSpeechState());
+        }
+        if (onEnd) onEnd();
       };
 
       utterance.onend = () => {
-        this.isSpeaking = false;
-        this.currentUtterance = null;
-        if (onEnd) onEnd();
+        finishUtterance();
       };
 
       utterance.onerror = (e) => {
-        this.isSpeaking = false;
-        this.currentUtterance = null;
-        if (e.error !== 'canceled' && e.error !== 'interrupted') {
-          if (onError) onError(`Speech synthesis error: ${e.error}`);
+        if (this.currentUtteranceId !== utteranceId) return;
+        const errCode = e?.error || 'unknown';
+        if (errCode !== 'canceled' && errCode !== 'interrupted') {
+          if (onError) onError(`Speech synthesis error: ${errCode}`);
         }
-        if (onEnd) onEnd();
+        finishUtterance();
       };
 
+      // Emit initial start before calling speak() in case browser delays `onstart`,
+      // while `emitStartOnce` prevents duplicate `onStart` calls when `speak()` triggers synchronously.
+      emitStartOnce();
       window.speechSynthesis.speak(utterance);
+
+      return { utteranceId, timeline };
     } catch (err) {
+      this._stopSpeechTicker();
+      this.lipsync.stop();
       this.isSpeaking = false;
+      this.currentUtterance = null;
+      this.currentUtteranceId = null;
+      this.currentViseme = VISEME_CODES.REST;
+      this.currentVisemePose = getVisemePose(VISEME_CODES.REST);
+      this.speechLevel = 0;
+      this.speechPulse = 0;
+      this.visemeTimeline = null;
       if (onError) onError(`Speech failure: ${err.message}`);
       if (onEnd) onEnd();
+      return null;
+    }
+  }
+
+  /**
+   * Internal ticker that advances viseme state and notifies subscribers on viseme/level transitions
+   * while speech is active. Automatically stops when speech ends or is cancelled.
+   */
+  _startSpeechTicker(utteranceId, onVisemeChange) {
+    this._stopSpeechTicker();
+    let lastEmittedViseme = null;
+    let lastNotifyTime = 0;
+
+    const tick = () => {
+      if (!this.isSpeaking || this.currentUtteranceId !== utteranceId) {
+        this._stopSpeechTicker();
+        return;
+      }
+
+      const now = this._now();
+      const sampled = this.sampleSpeechState(now);
+
+      // Emit updates when viseme changes or every ~45ms for smooth telemetry
+      if (sampled.viseme !== lastEmittedViseme || now - lastNotifyTime >= 45) {
+        lastEmittedViseme = sampled.viseme;
+        lastNotifyTime = now;
+        this._notifySpeech();
+        if (onVisemeChange) {
+          onVisemeChange(sampled);
+        }
+      }
+
+      if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+        this.speechTickerId = window.requestAnimationFrame(tick);
+      }
+    };
+
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      this.speechTickerId = window.requestAnimationFrame(tick);
+    }
+  }
+
+  _stopSpeechTicker() {
+    if (this.speechTickerId !== null) {
+      if (typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
+        window.cancelAnimationFrame(this.speechTickerId);
+      }
+      this.speechTickerId = null;
     }
   }
 
   /**
    * Immediate speech interruption.
+   * Cancels all pending viseme cues, stops particle energy injection, and prevents stale utterance events.
    */
   stopSpeaking() {
+    const wasSpeaking = this.isSpeaking || this.currentUtteranceId !== null;
+    this._stopSpeechTicker();
+    this.lipsync.stop();
+    this.currentUtteranceId = null;
+    this.currentUtterance = null;
+    this.isSpeaking = false;
+    this.currentViseme = VISEME_CODES.REST;
+    this.currentVisemePose = getVisemePose(VISEME_CODES.REST);
+    this.speechLevel = 0;
+    this.speechPulse = 0;
+    this.visemeTimeline = null;
+
     if (this.isSpeechSynthesisSupported()) {
       try {
         window.speechSynthesis.cancel();
@@ -228,8 +590,14 @@ class VoiceService {
         // Ignore
       }
     }
-    this.isSpeaking = false;
-    this.currentUtterance = null;
+
+    if (wasSpeaking) {
+      this._notifySpeech({
+        speechStart: false,
+        speechEnd: true,
+        speechCancelled: true,
+      });
+    }
   }
 
   /**
@@ -261,7 +629,7 @@ class VoiceService {
   }
 
   /**
-   * Private: Web Audio API microphone stream volume meter.
+   * Private: Web Audio API microphone stream volume meter (strictly for user STT listening state).
    */
   async _startAudioAnalysis(onAudioLevel) {
     if (typeof window === 'undefined' || !navigator.mediaDevices?.getUserMedia) return;

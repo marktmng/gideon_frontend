@@ -1,8 +1,9 @@
 /**
- * Shared Interaction Controller for Gideon Phase 3.
+ * Shared Interaction Controller for Gideon Phase 3 & 4.
  * Acts as the single source of truth coordinating:
  * - Interaction state (idle, listening, processing, speaking, executing, error)
- * - Audio-reactive volume levels
+ * - Strictly separated microphone input level (`audioLevel`) vs outgoing AI speech activity (`speechLevel`, `speechPulse`)
+ * - Playback-synchronized viseme lipsync state (`currentViseme`, `visemePose`, `visemeTimeline`, `utteranceId`)
  * - Voice input (STT) and output (TTS)
  * - Camera streams and local hand gesture recognition
  * - Immediate interruption and graceful recovery
@@ -10,6 +11,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import voiceService from './voiceService';
+import { VISEME_CODES, getVisemePose } from './lipsyncService';
 import cameraService from './cameraService';
 import gestureService from './gestureService';
 import { loadSettings, saveSettings } from './settingsStorage';
@@ -30,7 +32,16 @@ export function useInteractionController({
 }) {
   const [settings, setSettings] = useState(loadSettings);
   const [interactionState, setInteractionState] = useState(INTERACTION_STATES.IDLE);
+  // Microphone input level (strictly user STT receptor)
   const [audioLevel, setAudioLevel] = useState(0);
+  // Outgoing AI speech signals (strictly Gideon TTS playback)
+  const [speechLevel, setSpeechLevel] = useState(0);
+  const [speechPulse, setSpeechPulse] = useState(0);
+  const [currentViseme, setCurrentViseme] = useState(VISEME_CODES.REST);
+  const [visemePose, setVisemePose] = useState(() => getVisemePose(VISEME_CODES.REST));
+  const [visemeTimeline, setVisemeTimeline] = useState(null);
+  const [utteranceId, setUtteranceId] = useState(null);
+
   const [interimTranscript, setInterimTranscript] = useState('');
   const [statusMessage, setStatusMessage] = useState('Gideon Neural Core Online. Standing by.');
   const [errorMessage, setErrorMessage] = useState(null);
@@ -64,6 +75,19 @@ export function useInteractionController({
       }
       return updated;
     });
+  }, []);
+
+  // Subscribe to outgoing speech & viseme lifecycle from voiceService
+  useEffect(() => {
+    const unsub = voiceService.subscribeSpeech((speechState) => {
+      setSpeechLevel(speechState.isSpeaking ? speechState.speechLevel || 0 : 0);
+      setSpeechPulse(speechState.isSpeaking ? speechState.speechPulse || 0 : 0);
+      setCurrentViseme(speechState.isSpeaking ? speechState.viseme || VISEME_CODES.REST : VISEME_CODES.REST);
+      setVisemePose(speechState.visemePose || getVisemePose(VISEME_CODES.REST));
+      setVisemeTimeline(speechState.visemeTimeline || null);
+      setUtteranceId(speechState.utteranceId || null);
+    });
+    return unsub;
   }, []);
 
   // Subscribe to camera service
@@ -112,7 +136,15 @@ export function useInteractionController({
   const stopSpeaking = useCallback(() => {
     voiceService.stopSpeaking();
     isSpeakingRef.current = false;
-    setInteractionState((prev) => (prev === INTERACTION_STATES.SPEAKING ? INTERACTION_STATES.IDLE : prev));
+    setSpeechLevel(0);
+    setSpeechPulse(0);
+    setCurrentViseme(VISEME_CODES.REST);
+    setVisemePose(getVisemePose(VISEME_CODES.REST));
+    setVisemeTimeline(null);
+    setUtteranceId(null);
+    setInteractionState((prev) =>
+      prev === INTERACTION_STATES.SPEAKING ? INTERACTION_STATES.IDLE : prev
+    );
     setStatusMessage('Gideon Neural Core Online. Standing by.');
   }, []);
 
@@ -122,7 +154,9 @@ export function useInteractionController({
     isListeningRef.current = false;
     setAudioLevel(0);
     setInterimTranscript('');
-    setInteractionState((prev) => (prev === INTERACTION_STATES.LISTENING ? INTERACTION_STATES.IDLE : prev));
+    setInteractionState((prev) =>
+      prev === INTERACTION_STATES.LISTENING ? INTERACTION_STATES.IDLE : prev
+    );
     setStatusMessage('Gideon Neural Core Online. Standing by.');
   }, []);
 
@@ -137,7 +171,7 @@ export function useInteractionController({
     setStatusMessage('Session paused by user.');
   }, [stopSpeaking, stopListening, onHaltGeneration]);
 
-  // Voice Input (Push-to-Talk)
+  // Voice Input (Push-to-Talk) — strictly user microphone input
   const startListening = useCallback(async () => {
     if (!voiceService.isSpeechRecognitionSupported()) {
       setErrorMessage('Speech recognition is not supported in this browser.');
@@ -188,6 +222,7 @@ export function useInteractionController({
         }
       },
       onAudioLevel: (level) => {
+        // Microphone RMS strictly updates user receptor `audioLevel`, never `speechLevel`
         setAudioLevel(level);
       },
     });
@@ -205,9 +240,9 @@ export function useInteractionController({
     }
   }, [interactionState, startListening, stopListening]);
 
-  // Voice Output (Speak completed response)
+  // Voice Output (Speak completed response with synchronized viseme timeline)
   const speakResponse = useCallback(
-    (text) => {
+    (text, alignment = null) => {
       if (!settings.voiceEnabled || !voiceService.isSpeechSynthesisSupported() || !text) {
         return;
       }
@@ -216,36 +251,39 @@ export function useInteractionController({
       setStatusMessage('Speaking response...');
       isSpeakingRef.current = true;
 
-      // Simulated speech pulse for the Tech Brain waveform
-      let pulseInterval = setInterval(() => {
-        if (!isSpeakingRef.current) {
-          clearInterval(pulseInterval);
-          setAudioLevel(0);
-          return;
-        }
-        // Organic pseudo-waveform cadence between 0.3 and 0.85
-        const pseudoAmp = 0.35 + Math.random() * 0.45;
-        setAudioLevel(pseudoAmp);
-      }, 100);
-
       voiceService.speak(text, {
         voiceURI: settings.selectedVoiceURI,
         rate: settings.speechRate,
         pitch: settings.speechPitch,
-        onStart: () => {
+        alignment,
+        onStart: (startInfo) => {
           isSpeakingRef.current = true;
+          if (startInfo?.utteranceId) {
+            setUtteranceId(startInfo.utteranceId);
+          }
+          if (startInfo?.timeline) {
+            setVisemeTimeline(startInfo.timeline);
+          }
         },
         onEnd: () => {
-          clearInterval(pulseInterval);
           isSpeakingRef.current = false;
-          setAudioLevel(0);
+          setSpeechLevel(0);
+          setSpeechPulse(0);
+          setCurrentViseme(VISEME_CODES.REST);
+          setVisemePose(getVisemePose(VISEME_CODES.REST));
+          setVisemeTimeline(null);
+          setUtteranceId(null);
           setInteractionState(INTERACTION_STATES.IDLE);
           setStatusMessage('Gideon Neural Core Online. Standing by.');
         },
         onError: (err) => {
-          clearInterval(pulseInterval);
           isSpeakingRef.current = false;
-          setAudioLevel(0);
+          setSpeechLevel(0);
+          setSpeechPulse(0);
+          setCurrentViseme(VISEME_CODES.REST);
+          setVisemePose(getVisemePose(VISEME_CODES.REST));
+          setVisemeTimeline(null);
+          setUtteranceId(null);
           console.warn('Voice output notice:', err);
           setInteractionState(INTERACTION_STATES.IDLE);
           setStatusMessage('Gideon Neural Core Online. Standing by.');
@@ -257,7 +295,7 @@ export function useInteractionController({
 
   // Gesture Action Dispatcher
   const handleGestureAction = useCallback(
-    (action, gesture) => {
+    (action) => {
       switch (action) {
         case 'toggle_listening':
           toggleListening();
@@ -266,7 +304,10 @@ export function useInteractionController({
           stopSpeaking();
           break;
         case 'confirm':
-          // Reserved for UI modal confirmations
+          // Security policy: Gestures are strictly prohibited from authorizing sensitive operations or desktop directives.
+          console.info(
+            'Security Policy: Gesture authorization of sensitive actions is strictly prohibited.'
+          );
           break;
         case 'reject':
           handleInterruption();
@@ -323,23 +364,35 @@ export function useInteractionController({
   }, []);
 
   // Update interaction state when processing starts/ends externally
-  const setProcessing = useCallback((processing, query = '') => {
-    if (processing) {
-      setInteractionState(INTERACTION_STATES.PROCESSING);
-      setStatusMessage(query ? `Thinking: "${query}"` : 'Synthesizing response...');
-    } else if (
-      !isSpeakingRef.current &&
-      !isListeningRef.current &&
-      !activeTask
-    ) {
-      setInteractionState(INTERACTION_STATES.IDLE);
-      setStatusMessage('Gideon Neural Core Online. Standing by.');
-    }
-  }, [activeTask]);
+  const setProcessing = useCallback(
+    (processing, query = '') => {
+      if (processing) {
+        setInteractionState(INTERACTION_STATES.PROCESSING);
+        setStatusMessage(query ? `Thinking: "${query}"` : 'Synthesizing response...');
+      } else if (
+        !isSpeakingRef.current &&
+        !isListeningRef.current &&
+        !activeTask
+      ) {
+        setInteractionState(INTERACTION_STATES.IDLE);
+        setStatusMessage('Gideon Neural Core Online. Standing by.');
+      }
+    },
+    [activeTask]
+  );
 
   return {
     state: interactionState,
+    // Microphone input level (strictly user listening)
     audioLevel,
+    // Outgoing AI speech signals & viseme lipsync state
+    speechLevel,
+    speechPulse,
+    currentViseme,
+    visemePose,
+    visemeTimeline,
+    utteranceId,
+
     interimTranscript,
     statusMessage,
     errorMessage,

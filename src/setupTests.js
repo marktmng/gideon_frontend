@@ -16,6 +16,8 @@ if (typeof HTMLCanvasElement !== 'undefined') {
     save: () => {},
     restore: () => {},
     translate: () => {},
+    setTransform: () => {},
+    scale: () => {},
     createRadialGradient: () => ({
       addColorStop: () => {},
     }),
@@ -69,6 +71,8 @@ if (typeof window !== 'undefined') {
     pause: jest.fn(),
     resume: jest.fn(),
     getVoices: () => [
+      { name: 'Amy Louise Pemberton (Gideon AI) - English (United Kingdom)', lang: 'en-GB', voiceURI: 'amy-gideon-voice' },
+      { name: 'Microsoft Libby Online (Natural) - English (United Kingdom)', lang: 'en-GB', voiceURI: 'libby-gb' },
       { name: 'Gideon English Voice', lang: 'en-US', voiceURI: 'gideon-en-voice' },
     ],
     onvoiceschanged: null,

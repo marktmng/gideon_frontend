@@ -212,12 +212,18 @@ export default function SettingsWorkspace({
                     onChange={handleVoiceSelect}
                     className="settings-select"
                   >
-                    <option value="">Default Browser Voice</option>
-                    {availableVoices.map((v) => (
-                      <option key={v.voiceURI} value={v.voiceURI}>
-                        {v.name} ({v.lang})
-                      </option>
-                    ))}
+                    <option value="">✨ Amy Louise Pemberton (Gideon AI - British Female) [Auto]</option>
+                    {availableVoices.map((v) => {
+                      const isBritish = (v.lang || '').toLowerCase().includes('gb') || (v.lang || '').toLowerCase().includes('uk');
+                      const name = (v.name || '').toLowerCase();
+                      const isRecommended = isBritish && (name.includes('libby') || name.includes('mia') || name.includes('hazel') || name.includes('female') || name.includes('amy'));
+                      return (
+                        <option key={v.voiceURI} value={v.voiceURI}>
+                          {isRecommended ? '🇬🇧 [Amy Louise Pemberton match] ' : isBritish ? '🇬🇧 ' : ''}
+                          {v.name} ({v.lang})
+                        </option>
+                      );
+                    })}
                   </select>
                 </div>
               </div>
