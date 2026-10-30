@@ -72,10 +72,15 @@ export const PHYSICS_CONSTANTS = {
 // Gideon Command Centre color palette by state
 const GIDEON_DOT_COLORS = {
   idle: '#38bdf8', // --accent-blue
+  permission_needed: '#f59e0b', // amber
+  standby: '#1e90ff', // dodger blue
+  wake_detected: '#00f2fe', // bright cyan
   speaking: '#00f2fe', // --accent-cyan
   listening: '#10b981', // --status-completed emerald
   processing: '#818cf8', // --accent-secondary indigo
   executing: '#f59e0b', // --status-pending amber
+  interrupted: '#f59e0b', // amber
+  mic_unavailable: '#9ca3af', // gray
   error: '#ef4444', // --status-error crimson
 };
 
@@ -927,14 +932,15 @@ const VoiceReactiveDotField = forwardRef(function VoiceReactiveDotField(
       last = now;
       time += dt;
 
-      // Sample live outgoing speech state (props or voiceService)
+      // Sample live outgoing speech state (strictly audio-driven from playback)
       const serviceSample = voiceService.isSpeaking
         ? voiceService.sampleSpeechState(now)
         : null;
       const activeSpeaking = Boolean(
-        propsRef.current.isSpeaking ||
-          propsRef.current.state === 'speaking' ||
-          (serviceSample && serviceSample.isSpeaking)
+        voiceService.isSpeaking &&
+          serviceSample &&
+          serviceSample.isSpeaking &&
+          !serviceSample.isPause
       );
       const effectiveLevel = activeSpeaking
         ? Math.max(

@@ -37,6 +37,8 @@ class GestureService {
       Thumb_Down: 'reject',
       Closed_Fist: 'stop_speech',
       Victory: 'toggle_camera_preview',
+      Pointing_Up: 'read_active_window',
+      ILoveYou: 'greet_gideon',
     };
   }
 
@@ -294,6 +296,11 @@ class GestureService {
       return { gesture: 'Closed_Fist', confidence: 0.85 };
     }
 
+    // Pointing Up: Index finger extended vertically (narrow aspect ratio, tip high)
+    if (aspectRatio < 0.52 && minY < height * 0.28 && fillRatio > 0.40) {
+      return { gesture: 'Pointing_Up', confidence: 0.81 };
+    }
+
     // Open Palm: Large bounding area, lower fill density (fingers spread)
     if (fillRatio <= 0.60 && boxArea > 1500) {
       return { gesture: 'Open_Palm', confidence: 0.82 };
@@ -312,7 +319,24 @@ class GestureService {
       return { gesture: 'Victory', confidence: 0.79 };
     }
 
+    // I Love You / Horns: Wide bounding box, medium-low fill ratio
+    if (aspectRatio > 0.82 && aspectRatio < 1.4 && fillRatio >= 0.35 && fillRatio <= 0.52) {
+      return { gesture: 'ILoveYou', confidence: 0.78 };
+    }
+
     return { gesture: 'None', confidence: 0 };
+  }
+
+  getDiagnostics() {
+    return {
+      status: this.status,
+      useFallback: this.useFallback,
+      isProcessing: this.isProcessing,
+      detectedGesture: this.currentDetectedGesture,
+      confidence: this.currentConfidence,
+      lastTriggeredAction: this.lastTriggeredAction,
+      mappings: { ...this.mappings },
+    };
   }
 }
 

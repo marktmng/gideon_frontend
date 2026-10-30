@@ -18,7 +18,6 @@ import {
   VISEME_CODES,
   VISEME_POSES,
   getVisemePose,
-  evaluateTimelineAt,
 } from '../../services/lipsyncService';
 import './GideonTechBrain.css';
 
@@ -475,10 +474,6 @@ export default function GideonTechBrain({
 
     let time = 0;
     let isVisible = true;
-    const startWallMs =
-      typeof performance !== 'undefined' && typeof performance.now === 'function'
-        ? performance.now()
-        : Date.now();
 
     const handleVisibilityChange = () => {
       isVisible = document.visibilityState !== 'hidden';
@@ -486,9 +481,8 @@ export default function GideonTechBrain({
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     // Resolve target viseme pose and outgoing speech intensity for the current frame.
-    // Strictly ignores microphone `audioLevel` when in `listening` state.
+    // Strictly audio-driven: mouth only animates during actual speech playback, never during state delays.
     const resolveFrameSpeechAndPose = () => {
-      const currentState = stateRef.current;
       const sp = speechPropsRef.current;
       const nowMs =
         typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -496,37 +490,20 @@ export default function GideonTechBrain({
           : Date.now();
 
       const liveService = voiceService.isSpeaking ? voiceService.sampleSpeechState(nowMs) : null;
-      const activeSpeaking = Boolean(
-        currentState === 'speaking' ||
-          sp.isSpeaking ||
-          (liveService && liveService.isSpeaking) ||
-          sp.viseme ||
-          sp.visemePose
+      
+      // Strict playback condition: voiceService must be actively emitting speech
+      const genuinelySpeaking = Boolean(
+        voiceService.isSpeaking &&
+        liveService &&
+        liveService.isSpeaking &&
+        !liveService.isPause
       );
 
-      if (!activeSpeaking) {
+      if (!genuinelySpeaking) {
         return {
           isSpeaking: false,
           pose: VISEME_POSES[VISEME_CODES.REST],
           speechLevel: 0,
-        };
-      }
-
-      if (sp.visemePose && typeof sp.visemePose.openY === 'number') {
-        return {
-          isSpeaking: true,
-          pose: sp.visemePose,
-          speechLevel:
-            sp.speechLevel > 0 ? sp.speechLevel : sp.visemePose.baseEnergy || 0.45,
-        };
-      }
-
-      if (sp.viseme) {
-        const p = getVisemePose(sp.viseme);
-        return {
-          isSpeaking: true,
-          pose: p,
-          speechLevel: sp.speechLevel > 0 ? sp.speechLevel : p.baseEnergy || 0.45,
         };
       }
 
@@ -538,25 +515,25 @@ export default function GideonTechBrain({
         };
       }
 
-      if (sp.visemeTimeline && Array.isArray(sp.visemeTimeline.cues)) {
-        const evalResult = evaluateTimelineAt(sp.visemeTimeline, nowMs - startWallMs);
+      if (sp.visemePose && typeof sp.visemePose.openY === 'number') {
         return {
           isSpeaking: true,
-          pose: evalResult.pose,
-          speechLevel: sp.speechLevel > 0 ? sp.speechLevel : evalResult.speechLevel,
+          pose: sp.visemePose,
+          speechLevel: sp.speechLevel || sp.visemePose.baseEnergy || 0.45,
         };
       }
 
       return {
-        isSpeaking: true,
+        isSpeaking: false,
         pose: VISEME_POSES[VISEME_CODES.REST],
-        speechLevel: sp.speechLevel || 0,
+        speechLevel: 0,
       };
     };
 
-    const stepPoseSmoothing = (targetPose) => {
+    const stepPoseSmoothing = (targetPose, isSpeakingTarget = false) => {
       const cur = livePoseRef.current;
-      const alpha = reducedMotion ? 1.0 : 0.34;
+      // Snap instantly to REST when speech stops so the mouth closes immediately
+      const alpha = reducedMotion || !isSpeakingTarget ? 0.85 : 0.38;
       const lerp = (a, b) => a + (b - a) * alpha;
 
       cur.code = targetPose.code || VISEME_CODES.REST;
@@ -588,7 +565,7 @@ export default function GideonTechBrain({
 
       const { isSpeaking: frameSpeaking, pose: targetPose, speechLevel: outSpeechLevel } =
         resolveFrameSpeechAndPose();
-      const pose = stepPoseSmoothing(targetPose);
+      const pose = stepPoseSmoothing(targetPose, frameSpeaking);
 
       const centerX = dimensions.width / 2;
       const centerY = dimensions.height / 2;
@@ -602,6 +579,36 @@ export default function GideonTechBrain({
       let coreScale = 1.0;
 
       switch (currentState) {
+        case 'permission_needed':
+          baseDotRGB = '245, 158, 11';
+          highlightDotRGB = '251, 191, 36';
+          peakDotRGB = '254, 243, 199';
+          coreScale = 1.0 + Math.sin(time * 1.5) * 0.015;
+          break;
+        case 'standby':
+          baseDotRGB = '30, 144, 255';
+          highlightDotRGB = '0, 242, 254';
+          peakDotRGB = '224, 242, 254';
+          coreScale = 1.0 + Math.sin(time * 0.8) * 0.015;
+          break;
+        case 'wake_detected':
+          baseDotRGB = '0, 242, 254';
+          highlightDotRGB = '52, 211, 153';
+          peakDotRGB = '240, 253, 250';
+          coreScale = 1.03 + Math.sin(time * 8.0) * 0.025;
+          break;
+        case 'interrupted':
+          baseDotRGB = '245, 158, 11';
+          highlightDotRGB = '251, 191, 36';
+          peakDotRGB = '254, 243, 199';
+          coreScale = 1.01;
+          break;
+        case 'mic_unavailable':
+          baseDotRGB = '156, 163, 175';
+          highlightDotRGB = '209, 213, 219';
+          peakDotRGB = '243, 244, 246';
+          coreScale = 1.0;
+          break;
         case 'listening':
           baseDotRGB = '16, 185, 129';
           highlightDotRGB = '52, 211, 153';
@@ -816,10 +823,15 @@ export default function GideonTechBrain({
 
   const stateLabels = {
     idle: 'GIDEON CORE STANDBY',
+    permission_needed: 'MIC PERMISSION REQUIRED',
+    standby: 'WAKE WORD STANDBY ("HEY GIDEON")',
+    wake_detected: 'WAKE PHRASE RECOGNIZED',
     listening: 'NEURAL AUDIO RECEPTOR ACTIVE',
     processing: 'SYNAPSE PROCESSING',
     speaking: 'VOCAL SYNTHESIZER TRANSMITTING',
     executing: 'DIRECTIVE IN PROGRESS',
+    interrupted: 'VOCAL INTERRUPT ACKNOWLEDGED',
+    mic_unavailable: 'MICROPHONE RECEPTOR OFFLINE',
     error: 'ANOMALY DETECTED',
   };
 

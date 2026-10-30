@@ -7,6 +7,35 @@ export default function DemoBadge({
   status = 'demo_mode',
   model = null,
 }) {
+  const isOllamaProvider = provider === 'ollama' || provider === 'local';
+  const isOllamaOffline = status === 'ollama_offline' || status === 'provider_offline' || status === 'offline';
+
+  if (isOllamaProvider && isOllamaOffline) {
+    return (
+      <span
+        className={`demo-badge demo-badge-unconfigured ${compact ? 'demo-badge-compact' : ''}`}
+        title={`Ollama is offline or unreachable at http://127.0.0.1:11434. Run 'ollama serve' to activate.`}
+        style={{ borderColor: 'rgba(239, 68, 68, 0.5)', color: '#f87171' }}
+      >
+        <span className="demo-badge-dot unconfigured" style={{ background: '#ef4444', boxShadow: '0 0 6px #ef4444' }}></span>
+        OLLAMA OFFLINE
+      </span>
+    );
+  }
+
+  if (isOllamaProvider || status === 'local_ai_active') {
+    return (
+      <span
+        className={`demo-badge demo-badge-online ${compact ? 'demo-badge-compact' : ''}`}
+        title={`Active Local AI: Ollama (${model || 'llama3.2'}). On-device neural generation without cloud APIs.`}
+        style={{ borderColor: 'rgba(56, 189, 248, 0.5)', color: '#38bdf8' }}
+      >
+        <span className="demo-badge-dot online" style={{ background: '#38bdf8', boxShadow: '0 0 8px #38bdf8' }}></span>
+        LOCAL AI (OLLAMA)
+      </span>
+    );
+  }
+
   if (isDemo) {
     return (
       <span

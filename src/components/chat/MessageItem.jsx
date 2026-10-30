@@ -13,6 +13,15 @@ export default function MessageItem({ message, reducedMotion = false }) {
   const isAssistant = message.role === 'assistant';
   const isSystem = message.role === 'system';
 
+  const isLocalEvidence = isAssistant && message.content && (
+    message.content.includes('Active Foreground Window') ||
+    message.content.includes('Local Screen OCR') ||
+    message.content.includes('Workspace Directory Summary') ||
+    message.content.includes('Gideon Task Engine Status') ||
+    message.content.includes('System Activity & Workspace Changes') ||
+    message.content.includes('[LOCAL_PC_EVIDENCE]')
+  );
+
   useEffect(() => {
     const el = elementRef.current;
     if (el) {
@@ -52,7 +61,6 @@ export default function MessageItem({ message, reducedMotion = false }) {
     let blockIndex = 0;
 
     while ((match = codeBlockRegex.exec(content)) !== null) {
-      // Preceding text
       if (match.index > lastIndex) {
         parts.push({
           type: 'text',
@@ -60,7 +68,6 @@ export default function MessageItem({ message, reducedMotion = false }) {
         });
       }
 
-      // Code block
       parts.push({
         type: 'code',
         language: match[1] || 'plaintext',
@@ -118,7 +125,6 @@ export default function MessageItem({ message, reducedMotion = false }) {
             const isBullet = line.trim().startsWith('- ') || line.trim().startsWith('• ') || line.trim().startsWith('* ');
             const lineContent = isBullet ? line.trim().slice(2) : line;
 
-            // Simple inline code highlight: `code`
             const inlineSegments = lineContent.split(/(`[^`]+`)/g);
 
             return (
@@ -164,6 +170,27 @@ export default function MessageItem({ message, reducedMotion = false }) {
       <div className="message-bubble-wrapper">
         <div className="message-header">
           <span className="message-sender">{isAssistant ? 'Gideon' : 'You'}</span>
+          {isLocalEvidence && (
+            <span
+              className="local-evidence-badge"
+              style={{
+                fontSize: '0.7rem',
+                padding: '2px 8px',
+                borderRadius: '12px',
+                background: 'rgba(56, 189, 248, 0.12)',
+                color: '#38bdf8',
+                border: '1px solid rgba(56, 189, 248, 0.35)',
+                marginRight: 'auto',
+                marginLeft: '8px',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+              }}
+              title="Verified on-device PC evidence (Window titles, local OCR, or workspace)"
+            >
+              <span style={{ color: '#38bdf8', fontSize: '0.65rem' }}>●</span> Local PC Evidence
+            </span>
+          )}
           <span className="message-timestamp">{formatTime(message.created_at)}</span>
         </div>
 

@@ -95,6 +95,14 @@ export default function CommandPalette({
       action: () => onViewChange('chat'),
     },
     {
+      id: 'nav_agent_engine',
+      category: 'Navigation',
+      title: 'Agent Engine & Automation',
+      description: 'Switch to AI agent orchestrator and task automation deck',
+      icon: '🤖',
+      action: () => onViewChange('agents'),
+    },
+    {
       id: 'nav_desktop_tasks',
       category: 'Navigation',
       title: 'Desktop Automation',
