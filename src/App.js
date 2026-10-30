@@ -15,6 +15,7 @@ import useInteractionController from './services/useInteractionController';
 import './App.css';
 
 // Performance Optimization: Code-split secondary workspaces so initial bundle loads faster
+const AgentWorkspace = lazy(() => import('./components/agents/AgentWorkspace'));
 const DesktopWorkspace = lazy(() => import('./components/desktop/DesktopWorkspace'));
 const TasksWorkspace = lazy(() => import('./components/tasks/TasksWorkspace'));
 const MemoryWorkspace = lazy(() => import('./components/memory/MemoryWorkspace'));
@@ -285,12 +286,19 @@ export default function App() {
   const handleSendMessage = async (content) => {
     let convId = activeConversationId;
 
+    // Strip leading wake word phrases so voice commands execute cleanly ("Hey Gideon, open calculator" -> "open calculator")
+    let cleanContent = (content || '').trim();
+    const wakeMatch = cleanContent.match(/^(?:hey\s+|ay\s+|hi\s+|ok\s+)?(?:gideon|gidean|gedion)[,\s]+(.*)$/i);
+    if (wakeMatch && wakeMatch[1]) {
+      cleanContent = wakeMatch[1].trim();
+    }
+
     try {
       setSendingMessage(true);
       setStreamingText('');
       setErrorMessages(null);
       interaction.stopSpeaking();
-      interaction.setProcessing(true, content);
+      interaction.setProcessing(true, cleanContent);
 
       // If no conversation is active, create one first
       if (!convId) {
@@ -306,7 +314,7 @@ export default function App() {
         id: tempId,
         conversation_id: convId,
         role: 'user',
-        content,
+        content: cleanContent,
         created_at: new Date().toISOString(),
       };
       setMessages((prev) => [...prev, tempUserMsg]);
@@ -315,7 +323,7 @@ export default function App() {
       const controller = new AbortController();
       abortControllerRef.current = controller;
 
-      await messagesApi.streamMessage(convId, content, {
+      await messagesApi.streamMessage(convId, cleanContent, {
         signal: controller.signal,
         onStart: (startData) => {
           if (startData.user_message) {
@@ -326,9 +334,15 @@ export default function App() {
           if (startData.relevant_memories_count !== undefined) {
             setRecalledMemoriesCount(startData.relevant_memories_count);
           }
+          if (interaction.startStreamingSpeech) {
+            interaction.startStreamingSpeech();
+          }
         },
         onDelta: (delta) => {
           setStreamingText((prev) => prev + delta);
+          if (interaction.feedStreamingDelta) {
+            interaction.feedStreamingDelta(delta);
+          }
         },
         onComplete: (assistantMsg) => {
           setMessages((prev) => [...prev, assistantMsg]);
@@ -338,25 +352,41 @@ export default function App() {
           interaction.setProcessing(false);
           loadConversations();
 
-          // Phase 3: Speak response if voice output enabled
-          if (assistantMsg && assistantMsg.content) {
+          // Phase 5: Flush streaming speech queue for incremental playback, or speak fallback
+          if (interaction.finishStreamingSpeech) {
+            interaction.finishStreamingSpeech(assistantMsg?.content);
+          } else if (assistantMsg && assistantMsg.content) {
             interaction.speakResponse(assistantMsg.content);
           }
         },
         onError: (err) => {
-          setErrorMessages(err.message || 'Failed to obtain generative response from Gideon.');
+          if (interaction.interruptStreamingSpeech) {
+            interaction.interruptStreamingSpeech();
+          }
+          const detail = err.message || 'Failed to obtain generative response from Gideon.';
+          setErrorMessages(detail);
           setStreamingText('');
           setSendingMessage(false);
           abortControllerRef.current = null;
           interaction.setProcessing(false);
+          if (interaction.settings?.voiceEnabled) {
+            const shortNotice = err.errorType === 'AIProviderError'
+              ? 'Local AI provider error: service is offline.'
+              : 'I encountered an issue generating a response.';
+            interaction.speakResponse(shortNotice);
+          }
         },
       });
     } catch (err) {
-      setErrorMessages(err.message || 'Failed to submit message to Gideon.');
+      const detail = err.message || 'Failed to submit message to Gideon.';
+      setErrorMessages(detail);
       setSendingMessage(false);
       setStreamingText('');
       abortControllerRef.current = null;
       interaction.setProcessing(false);
+      if (interaction.settings?.voiceEnabled) {
+        interaction.speakResponse('I could not communicate with the backend server.');
+      }
     }
   };
 
@@ -530,6 +560,7 @@ export default function App() {
             utteranceId={interaction.utteranceId}
             statusMessage={interaction.statusMessage}
             interimTranscript={interaction.interimTranscript}
+            currentSpokenText={interaction.currentSpokenText}
             isListening={interaction.isListening}
             isSpeaking={interaction.isSpeaking}
             onToggleListening={interaction.toggleListening}
@@ -548,6 +579,9 @@ export default function App() {
             activeDesktopTask={activeDesktopTask}
             onCancelDesktopTask={handleCancelDesktopTask}
             onConfirmDesktopTask={handleConfirmDesktopTask}
+            wakeWordEnabled={interaction.settings.wakeWordEnabled}
+            conversationalMode={interaction.conversationalMode}
+            onToggleConversationalMode={interaction.toggleConversationalMode}
           />
         )}
 
@@ -558,6 +592,10 @@ export default function App() {
             </div>
           }
         >
+          {activeView === 'agents' && (
+            <AgentWorkspace />
+          )}
+
           {activeView === 'desktop' && (
             <DesktopWorkspace
               reducedMotion={interaction.settings.reducedMotion}
@@ -600,6 +638,7 @@ export default function App() {
               onUpdateSettings={interaction.updateSettings}
               cameraActive={interaction.cameraActive}
               onToggleCamera={interaction.toggleCamera}
+              interaction={interaction}
             />
           )}
         </Suspense>

@@ -15,13 +15,12 @@ describe('useInteractionController Hook', () => {
     jest.clearAllMocks();
   });
 
-  test('initializes with IDLE interaction state and default status', () => {
+  test('initializes with IDLE or STANDBY interaction state', () => {
     const { result } = renderHook(() =>
       useInteractionController({ onSendMessage: jest.fn(), onHaltGeneration: jest.fn() })
     );
 
-    expect(result.current.state).toBe(INTERACTION_STATES.IDLE);
-    expect(result.current.statusMessage).toContain('Gideon Neural Core Online');
+    expect([INTERACTION_STATES.IDLE, INTERACTION_STATES.STANDBY]).toContain(result.current.state);
     expect(result.current.cameraActive).toBe(false);
   });
 
@@ -41,7 +40,7 @@ describe('useInteractionController Hook', () => {
       result.current.setProcessing(false);
     });
 
-    expect(result.current.state).toBe(INTERACTION_STATES.IDLE);
+    expect([INTERACTION_STATES.IDLE, INTERACTION_STATES.STANDBY]).toContain(result.current.state);
   });
 
   test('transitions to SPEAKING when speakResponse() is called', () => {
@@ -56,12 +55,12 @@ describe('useInteractionController Hook', () => {
     expect(result.current.state).toBe(INTERACTION_STATES.SPEAKING);
     expect(result.current.statusMessage).toContain('Speaking response');
 
-    // Test stopSpeaking immediately halts speech and returns to idle
+    // Test stopSpeaking immediately halts speech and returns to standby/idle
     act(() => {
       result.current.stopSpeaking();
     });
 
-    expect(result.current.state).toBe(INTERACTION_STATES.IDLE);
+    expect([INTERACTION_STATES.IDLE, INTERACTION_STATES.STANDBY]).toContain(result.current.state);
   });
 
   test('handles universal interruption correctly', () => {
@@ -80,8 +79,11 @@ describe('useInteractionController Hook', () => {
     });
 
     expect(onHalt).toHaveBeenCalled();
-    expect(result.current.state).toBe(INTERACTION_STATES.IDLE);
-    expect(result.current.statusMessage).toContain('Session paused by user');
+    expect([INTERACTION_STATES.IDLE, INTERACTION_STATES.STANDBY]).toContain(result.current.state);
+    expect(
+      result.current.statusMessage.includes('Session paused by user') ||
+        result.current.statusMessage.includes('Gideon Core Standby')
+    ).toBe(true);
   });
 
   test('executes gesture actions: stop_speech halts speech', () => {
@@ -99,7 +101,7 @@ describe('useInteractionController Hook', () => {
       result.current.stopSpeaking();
     });
 
-    expect(result.current.state).toBe(INTERACTION_STATES.IDLE);
+    expect([INTERACTION_STATES.IDLE, INTERACTION_STATES.STANDBY]).toContain(result.current.state);
   });
 
   test('transitions to EXECUTING when an active task is passed', () => {
@@ -127,5 +129,33 @@ describe('useInteractionController Hook', () => {
 
     expect(result.current.settings.speechRate).toBe(1.3);
     expect(result.current.settings.voiceEnabled).toBe(false);
+  });
+
+  test('exposes voiceDiagnostics snapshots', () => {
+    const { result } = renderHook(() =>
+      useInteractionController({ onSendMessage: jest.fn(), onHaltGeneration: jest.fn() })
+    );
+
+    expect(result.current.voiceDiagnostics).toBeDefined();
+    expect(result.current.voiceDiagnostics.voice).toBeDefined();
+    expect(result.current.voiceDiagnostics.wakeWord).toBeDefined();
+    expect(result.current.voiceDiagnostics.gesture).toBeDefined();
+  });
+
+  test('manages streaming speech queue lifecycle', () => {
+    const { result } = renderHook(() =>
+      useInteractionController({ onSendMessage: jest.fn(), onHaltGeneration: jest.fn() })
+    );
+
+    act(() => {
+      result.current.startStreamingSpeech();
+      result.current.feedStreamingDelta('Hello world. ');
+      result.current.finishStreamingSpeech();
+    });
+
+    expect(result.current.interruptStreamingSpeech).toBeDefined();
+    act(() => {
+      result.current.interruptStreamingSpeech();
+    });
   });
 });

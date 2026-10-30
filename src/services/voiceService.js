@@ -38,6 +38,9 @@ class VoiceService {
     this.speechPulse = 0;
     this.speechTickerId = null;
     this.speechListeners = new Set();
+    this.activeUtterances = new Set();
+    this.speechKeepAliveTimer = null;
+    this._bgKeepAliveNode = null;
 
     this.cachedVoices = [];
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
@@ -131,11 +134,67 @@ class VoiceService {
     };
   }
 
+  /**
+   * Transcribe recorded audio payload using Gideon backend SAPI or Gemini multimodal STT.
+   * Provides guaranteed fallback when browser Web Speech API is blocked or offline.
+   */
+  async transcribeAudio(audioBlob) {
+    if (!audioBlob || audioBlob.size === 0) return '';
+    if (typeof FileReader === 'undefined') return '';
+
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        try {
+          const base64Data = reader.result;
+          const baseUrl =
+            (typeof process !== 'undefined' && process.env?.REACT_APP_API_BASE_URL) ||
+            'http://localhost:8000/api/v1';
+          const response = await fetch(`${baseUrl}/voice/transcribe`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              audio_base64: base64Data,
+              mime_type: audioBlob.type || 'audio/webm',
+              format: audioBlob.type?.includes('wav') ? 'wav' : 'webm',
+            }),
+          });
+          if (!response.ok) {
+            resolve('');
+            return;
+          }
+          const data = await response.json();
+          resolve(data?.text || '');
+        } catch {
+          resolve('');
+        }
+      };
+      reader.onerror = () => resolve('');
+      reader.readAsDataURL(audioBlob);
+    });
+  }
+
   isSpeechRecognitionSupported() {
     return (
       typeof window !== 'undefined' &&
       !!(window.SpeechRecognition || window.webkitSpeechRecognition)
     );
+  }
+
+  /**
+   * Enumerate available microphone devices for hands-free device selection.
+   */
+  async getAudioInputDevices() {
+    if (typeof window === 'undefined' || !navigator.mediaDevices?.enumerateDevices) {
+      return [];
+    }
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      return devices.filter((d) => d.kind === 'audioinput');
+    } catch (err) {
+      console.warn('Failed to enumerate audio input devices:', err);
+      return [];
+    }
   }
 
   isSpeechSynthesisSupported() {
@@ -212,15 +271,25 @@ class VoiceService {
   /**
    * Start push-to-talk / voice recognition session.
    * Strictly measures user microphone input and never activates AI speaking state.
+   * Includes Voice Activity Detection (VAD) / silence timeout so utterances auto-commit
+   * when user pauses speaking without needing manual button clicks.
    */
-  async startListening({ onInterim, onFinal, onError, onStateChange, onAudioLevel } = {}) {
+  async startListening({
+    onInterim,
+    onFinal,
+    onError,
+    onStateChange,
+    onAudioLevel,
+    deviceId = '',
+    autoSilenceMs = 1100,
+  } = {}) {
     if (!this.isSpeechRecognitionSupported()) {
       if (onError) onError('Speech recognition is not supported in this browser.');
       return false;
     }
 
     if (this.isListening) {
-      this.stopListening();
+      this.stopListening(false);
     }
 
     // Stop speaking if Gideon is currently speaking
@@ -234,59 +303,158 @@ class VoiceService {
       return false;
     }
 
-    this.recognition.continuous = false;
+    this.recognition.continuous = true;
     this.recognition.interimResults = true;
     this.recognition.lang = 'en-US';
     this.onAudioLevelCallback = onAudioLevel;
 
-    let finalTranscript = '';
+    let accumulatedFinal = '';
+    let latestInterim = '';
     let hasEmittedFinal = false;
+    let silenceTimer = null;
+    let mediaRecorder = null;
+    let audioChunks = [];
+
+    const initMediaRecorder = () => {
+      if (typeof MediaRecorder !== 'undefined' && this.audioStream) {
+        try {
+          const mimeType = (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported('audio/webm;codecs=opus'))
+            ? 'audio/webm;codecs=opus'
+            : (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported('audio/webm'))
+            ? 'audio/webm'
+            : '';
+          mediaRecorder = mimeType ? new MediaRecorder(this.audioStream, { mimeType }) : new MediaRecorder(this.audioStream);
+          mediaRecorder.ondataavailable = (e) => {
+            if (e.data && e.data.size > 0) {
+              audioChunks.push(e.data);
+            }
+          };
+          mediaRecorder.start(100);
+        } catch (err) {
+          // MediaRecorder is optional fallback
+        }
+      }
+    };
+
+    const clearSilenceTimer = () => {
+      if (silenceTimer) {
+        clearTimeout(silenceTimer);
+        silenceTimer = null;
+      }
+    };
+
+    const commitUtterance = async (forceText = null) => {
+      clearSilenceTimer();
+      if (hasEmittedFinal) return;
+
+      let fullText = (
+        forceText !== null ? forceText : (accumulatedFinal + ' ' + latestInterim)
+      ).trim();
+
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        try { mediaRecorder.stop(); } catch {}
+      }
+
+      // If Web Speech API produced nothing, fallback to backend SAPI / Gemini transcription!
+      if (!fullText && audioChunks.length > 0) {
+        try {
+          const audioBlob = new Blob(audioChunks, { type: mediaRecorder?.mimeType || 'audio/webm' });
+          if (audioBlob.size > 500) {
+            const transcribed = await this.transcribeAudio(audioBlob);
+            if (transcribed && transcribed.trim()) {
+              fullText = transcribed.trim();
+            }
+          }
+        } catch {}
+      }
+
+      if (fullText) {
+        hasEmittedFinal = true;
+        this._activeCommit = null;
+        if (this.recognition) {
+          try {
+            this.recognition.stop();
+          } catch {}
+        }
+        this.isListening = false;
+        this._stopAudioAnalysis();
+        if (onFinal) onFinal(fullText);
+      }
+    };
+
+    // Store commit function so external callers (e.g. manual tap stop) commit pending speech
+    this._activeCommit = commitUtterance;
 
     this.recognition.onstart = () => {
       this.isListening = true;
       if (onStateChange) onStateChange(true);
-      this._startAudioAnalysis(onAudioLevel).catch(() => {
-        // Audio analysis is optional enhancement; recognition continues if mic stream fails
-      });
+      this._startAudioAnalysis(onAudioLevel, deviceId)
+        .then(() => {
+          initMediaRecorder();
+        })
+        .catch(() => {});
     };
 
     this.recognition.onresult = (event) => {
-      let interim = '';
+      clearSilenceTimer();
+      let currentInterim = '';
+      let newFinal = '';
+
       for (let i = event.resultIndex; i < event.results.length; ++i) {
         const item = event.results[i];
+        const transcript = item[0]?.transcript || '';
         if (item.isFinal) {
-          finalTranscript += item[0].transcript;
+          newFinal += transcript + ' ';
         } else {
-          interim += item[0].transcript;
+          currentInterim += transcript + ' ';
         }
       }
 
-      if (onInterim && interim) {
-        onInterim(interim);
+      if (newFinal) {
+        accumulatedFinal += newFinal;
+      }
+      latestInterim = currentInterim;
+
+      const liveText = (accumulatedFinal + ' ' + latestInterim).trim();
+      if (liveText) {
+        if (onInterim) {
+          onInterim(liveText);
+        }
+
+        // Auto-commit on silence pause (Voice Activity Detection)
+        if (autoSilenceMs > 0) {
+          silenceTimer = setTimeout(() => {
+            commitUtterance();
+          }, autoSilenceMs);
+        }
       }
 
-      if (finalTranscript.trim() && !hasEmittedFinal) {
-        hasEmittedFinal = true;
-        if (onFinal) onFinal(finalTranscript.trim());
+      // If browser explicitly marked speech final and there is no pending interim
+      if (newFinal.trim() && !latestInterim.trim() && !hasEmittedFinal) {
+        commitUtterance();
       }
     };
 
-    this.recognition.onerror = (event) => {
+    this.recognition.onerror = async (event) => {
       const errorType = event.error || 'unknown';
-      if (errorType === 'no-speech') {
-        // Handled as graceful non-fatal
+      if (errorType === 'network' || errorType === 'no-speech') {
+        // Fallback to recorded audio chunk
+        await commitUtterance();
         return;
       }
+      clearSilenceTimer();
       let userFriendlyMessage = `Speech recognition error: ${errorType}`;
       if (errorType === 'not-allowed' || errorType === 'permission-denied') {
         userFriendlyMessage = 'Microphone access denied. Please allow microphone permissions.';
-      } else if (errorType === 'network') {
-        userFriendlyMessage = 'Network error during speech recognition.';
       }
       if (onError) onError(userFriendlyMessage);
     };
 
-    this.recognition.onend = () => {
+    this.recognition.onend = async () => {
+      clearSilenceTimer();
+      if (!hasEmittedFinal) {
+        await commitUtterance();
+      }
       this.isListening = false;
       this._stopAudioAnalysis();
       if (onStateChange) onStateChange(false);
@@ -296,6 +464,7 @@ class VoiceService {
       this.recognition.start();
       return true;
     } catch (err) {
+      clearSilenceTimer();
       this.isListening = false;
       this._stopAudioAnalysis();
       if (onError) onError(`Could not start microphone: ${err.message}`);
@@ -305,8 +474,17 @@ class VoiceService {
 
   /**
    * Stop recognition session and release mic resources.
+   * If commitPending is true, commits whatever user spoke so far rather than discarding it!
    */
-  stopListening() {
+  stopListening(commitPending = true) {
+    if (commitPending && this._activeCommit) {
+      const commit = this._activeCommit;
+      this._activeCommit = null;
+      commit();
+      return;
+    }
+
+    this._activeCommit = null;
     if (this.recognition) {
       try {
         this.recognition.abort();
@@ -320,6 +498,27 @@ class VoiceService {
   }
 
   /**
+   * Keep-alive interval for Chromium/Blink engines.
+   * Prevents SpeechSynthesis from prematurely stalling/stopping at ~14 seconds.
+   */
+  _startSpeechKeepAlive() {
+    this._stopSpeechKeepAlive();
+    this.speechKeepAliveTimer = setInterval(() => {
+      if (typeof window !== 'undefined' && window.speechSynthesis?.speaking) {
+        window.speechSynthesis.pause();
+        window.speechSynthesis.resume();
+      }
+    }, 8500);
+  }
+
+  _stopSpeechKeepAlive() {
+    if (this.speechKeepAliveTimer) {
+      clearInterval(this.speechKeepAliveTimer);
+      this.speechKeepAliveTimer = null;
+    }
+  }
+
+  /**
    * Speak response text via window.speechSynthesis and synchronize the viseme timeline.
    */
   speak(
@@ -329,6 +528,7 @@ class VoiceService {
       rate = 1.0,
       pitch = 1.0,
       alignment = null,
+      queueMode = false,
       onStart,
       onEnd,
       onError,
@@ -341,8 +541,11 @@ class VoiceService {
       return null;
     }
 
-    // Cancel any existing speech and invalidate prior utterance IDs first
-    this.stopSpeaking();
+    // Cancel prior speech ONLY if not in sequential queue mode!
+    // In queueMode, sentences flow continuously without cancel() cutting them off.
+    if (!queueMode) {
+      this.stopSpeaking();
+    }
 
     const sanitized = this.sanitizeTextForSpeech(text);
     if (!sanitized) {
@@ -460,6 +663,12 @@ class VoiceService {
       };
 
       const finishUtterance = () => {
+        // Remove from active utterance Set to allow clean garbage collection once finished
+        this.activeUtterances.delete(utterance);
+        if (this.activeUtterances.size === 0) {
+          this._stopSpeechKeepAlive();
+        }
+
         // Guard against stale events from replaced/cancelled utterances
         if (this.currentUtteranceId !== utteranceId) return;
         this._stopSpeechTicker();
@@ -477,6 +686,9 @@ class VoiceService {
           speechEnd: true,
           speechCancelled: false,
         });
+        if (typeof window !== 'undefined') {
+          window._gideonActiveUtterance = null;
+        }
         if (onVisemeChange) {
           onVisemeChange(this.getSpeechState());
         }
@@ -488,6 +700,10 @@ class VoiceService {
       };
 
       utterance.onerror = (e) => {
+        this.activeUtterances.delete(utterance);
+        if (this.activeUtterances.size === 0) {
+          this._stopSpeechKeepAlive();
+        }
         if (this.currentUtteranceId !== utteranceId) return;
         const errCode = e?.error || 'unknown';
         if (errCode !== 'canceled' && errCode !== 'interrupted') {
@@ -496,9 +712,18 @@ class VoiceService {
         finishUtterance();
       };
 
-      // Emit initial start before calling speak() in case browser delays `onstart`,
-      // while `emitStartOnce` prevents duplicate `onStart` calls when `speak()` triggers synchronously.
-      emitStartOnce();
+      // Ensure browser audio synthesis isn't suspended (common Chromium idle state)
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+      }
+
+      // Maintain strong Set reference to prevent Chromium V8 garbage collector premature cutoff bug
+      this.activeUtterances.add(utterance);
+      if (typeof window !== 'undefined') {
+        window._gideonActiveUtterance = utterance;
+      }
+
+      this._startSpeechKeepAlive();
       window.speechSynthesis.speak(utterance);
 
       return { utteranceId, timeline };
@@ -572,6 +797,8 @@ class VoiceService {
    */
   stopSpeaking() {
     const wasSpeaking = this.isSpeaking || this.currentUtteranceId !== null;
+    this._stopSpeechKeepAlive();
+    this.activeUtterances.clear();
     this._stopSpeechTicker();
     this.lipsync.stop();
     this.currentUtteranceId = null;
@@ -601,12 +828,14 @@ class VoiceService {
   }
 
   /**
-   * Strip code blocks, Markdown headers, links, and technical characters
+   * Strip system metadata tags, code blocks, Markdown headers, links, and technical characters
    * so Gideon speaks natural, fluent sentences.
    */
   sanitizeTextForSpeech(text) {
     if (!text || typeof text !== 'string') return '';
     return text
+      // Remove system tags and brackets like [Gideon Demo Mode]: or [LOCAL_PC_EVIDENCE]:
+      .replace(/\[.*?\]:?/gi, '')
       // Remove multi-line code blocks
       .replace(/```[\s\S]*?```/g, ' [Code excerpt omitted] ')
       // Remove inline code
@@ -629,20 +858,88 @@ class VoiceService {
   }
 
   /**
-   * Private: Web Audio API microphone stream volume meter (strictly for user STT listening state).
+   * Start silent background audio keep-alive loop.
+   * Keeps Chromium from throttling background timers or suspending wake-word STT
+   * when another application (e.g. Spotify, Chrome, VS Code) takes foreground focus.
    */
-  async _startAudioAnalysis(onAudioLevel) {
+  _startBackgroundAudioKeepAlive() {
+    if (!this.audioContext || this._bgKeepAliveNode) return;
+    try {
+      const osc = this.audioContext.createOscillator();
+      const silentGain = this.audioContext.createGain();
+      silentGain.gain.setValueAtTime(0.000001, this.audioContext.currentTime); // Inaudible
+      osc.connect(silentGain);
+      silentGain.connect(this.audioContext.destination);
+      osc.start();
+      this._bgKeepAliveNode = osc;
+    } catch {}
+  }
+
+  handleMicDisconnected() {
+    console.warn('Microphone input track ended. Attempting automatic fallback...');
+    this._stopAudioAnalysis();
+    if (this.isListening) {
+      setTimeout(() => {
+        this._startAudioAnalysis(this.onAudioLevelCallback, '').catch(() => {});
+      }, 500);
+    }
+  }
+
+  /**
+   * Private: Web Audio API microphone stream volume meter (strictly for user STT listening state).
+   * Incorporates hardware-level DSP constraints (autoGainControl, echoCancellation, noiseSuppression)
+   * and Web Audio GainNode boost (1.8x) for high-sensitivity distant speech recognition from across the desk.
+   */
+  async _startAudioAnalysis(onAudioLevel, deviceId = '') {
     if (typeof window === 'undefined' || !navigator.mediaDevices?.getUserMedia) return;
     try {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       if (!AudioCtx) return;
-      this.audioContext = new AudioCtx();
-      this.audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!this.audioContext || this.audioContext.state === 'closed') {
+        this.audioContext = new AudioCtx();
+      }
+      if (this.audioContext.state === 'suspended') {
+        await this.audioContext.resume();
+      }
+
+      // Enhanced WebRTC constraints for distant speech & desk-level acoustic pickup
+      const constraints = {
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+          sampleRate: 48000,
+          latency: 0,
+          ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+        },
+      };
+
+      this.audioStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+      // Handle track ended (e.g. bluetooth headset disconnected)
+      const tracks = this.audioStream.getAudioTracks();
+      if (tracks && tracks.length > 0) {
+        tracks[0].onended = () => {
+          this.handleMicDisconnected();
+        };
+      }
+
       const source = this.audioContext.createMediaStreamSource(this.audioStream);
+
+      // Hardware/DSP Gain boost node (1.8x) for distant desk voice detection
+      const gainNode = this.audioContext.createGain();
+      gainNode.gain.setValueAtTime(1.8, this.audioContext.currentTime);
+
       this.analyser = this.audioContext.createAnalyser();
       this.analyser.fftSize = 256;
-      this.analyser.smoothingTimeConstant = 0.8;
-      source.connect(this.analyser);
+      this.analyser.smoothingTimeConstant = 0.75;
+
+      source.connect(gainNode);
+      gainNode.connect(this.analyser);
+
+      // Start silent background audio keep-alive
+      this._startBackgroundAudioKeepAlive();
 
       const bufferLength = this.analyser.frequencyBinCount;
       const dataArray = new Uint8Array(bufferLength);
@@ -655,17 +952,24 @@ class VoiceService {
           sum += dataArray[i];
         }
         const average = sum / bufferLength;
-        const normalized = Math.min(1.0, average / 128); // 0.0 to 1.0
+        const normalized = Math.min(1.0, (average / 110) * 1.5); // boosted normalized level
         if (onAudioLevel) onAudioLevel(normalized);
         this.audioAnimId = requestAnimationFrame(checkVolume);
       };
       this.audioAnimId = requestAnimationFrame(checkVolume);
-    } catch {
-      // Audio stream or permission unavailable; fallback gracefully
+    } catch (err) {
+      console.warn('Microphone stream initialisation notice:', err);
     }
   }
 
   _stopAudioAnalysis() {
+    if (this._bgKeepAliveNode) {
+      try {
+        this._bgKeepAliveNode.stop();
+        this._bgKeepAliveNode.disconnect();
+      } catch {}
+      this._bgKeepAliveNode = null;
+    }
     if (this.audioAnimId) {
       cancelAnimationFrame(this.audioAnimId);
       this.audioAnimId = null;
@@ -686,6 +990,20 @@ class VoiceService {
     if (this.onAudioLevelCallback) {
       this.onAudioLevelCallback(0);
     }
+  }
+
+  getDiagnostics() {
+    return {
+      isSpeechRecognitionSupported: this.isSpeechRecognitionSupported(),
+      isSpeechSynthesisSupported: this.isSpeechSynthesisSupported(),
+      isListening: this.isListening,
+      isSpeaking: this.isSpeaking,
+      hasAnalyser: !!this.analyser,
+      voicesCount: this.getVoices().length,
+      currentUtteranceId: this.currentUtteranceId,
+      currentViseme: this.currentViseme,
+      speechLevel: this.speechLevel,
+    };
   }
 }
 

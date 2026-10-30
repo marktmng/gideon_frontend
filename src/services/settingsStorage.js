@@ -1,6 +1,6 @@
 /**
  * Local settings persistence for Gideon Phase 3 preferences.
- * Manages voice, vision, gesture, and motion preferences.
+ * Manages voice, vision, gesture, motion, and hands-free wake word preferences.
  */
 
 const STORAGE_KEY = 'gideon_phase3_preferences';
@@ -10,6 +10,12 @@ const DEFAULT_SETTINGS = {
   speechRate: 1.0,
   speechPitch: 1.0,
   selectedVoiceURI: '',
+  // Hands-free wake word settings (Phase 5)
+  wakeWordEnabled: true,
+  wakeWordPhrase: 'both', // 'both' | 'hey_gideon' | 'gideon'
+  conversationalMode: true, // Continuous auto-listen after Gideon speaks
+  audioCueEnabled: true,
+  selectedMicrophoneId: '',
   cameraEnabled: false,
   gestureEnabled: false,
   gestureCooldownMs: 1500,

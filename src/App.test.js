@@ -89,8 +89,8 @@ test('renders Gideon brand title and welcome state', async () => {
   const gideonElements = screen.getAllByText(/Gideon/i);
   expect(gideonElements.length).toBeGreaterThan(0);
 
-  const welcomeHeading = screen.getByText(/Greetings\. I am Gideon\./i);
-  expect(welcomeHeading).toBeInTheDocument();
+  const commandCore = screen.getByText(/AI Command Core/i);
+  expect(commandCore).toBeInTheDocument();
 
   const demoBadges = screen.getAllByText(/DEMO MODE/i);
   expect(demoBadges.length).toBeGreaterThan(0);
